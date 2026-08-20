@@ -433,8 +433,9 @@ async fn refresh_account_session(
     app: &tauri::AppHandle,
     client: &Client,
 ) -> Result<ServerSession, String> {
-    let (_, account) =
+    let (status, account) =
         authenticated_json_request(app, client, Method::GET, "v1/account", None).await?;
+    ensure_success(status, &account, "账号额度刷新失败")?;
     let mut store = load_or_create_auth_store(app)?;
     update_store_from_account(&mut store, &account);
     save_auth_store(app, &store)?;
