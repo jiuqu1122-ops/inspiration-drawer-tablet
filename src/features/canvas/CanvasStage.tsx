@@ -18,11 +18,13 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
+  getImageAspectRatioOptions,
   getImageModelPreset,
   IMAGE_MODEL_PRESETS,
   IMAGE_RULE_DEFINITIONS,
   IMAGE_RULE_KEYS,
   IMAGE_RULE_PRESETS,
+  normalizeImageAspectRatio,
   type CanvasGenerationNode,
   type CanvasNode,
   type CanvasPoint,
@@ -729,6 +731,12 @@ function GenerationCanvasNode({
   onDisconnectRule: (ruleNodeId: string) => void;
 }) {
   const modelPreset = getImageModelPreset(node.request.model.model);
+  const aspectRatioOptions = getImageAspectRatioOptions(modelPreset.id, node.request.resolution);
+  const aspectRatioValue = normalizeImageAspectRatio(
+    modelPreset.id,
+    node.request.resolution,
+    node.request.aspectRatio,
+  );
   const resultViews = node.results
     .map((result) => assetsById.get(result.id))
     .filter((view): view is CanvasAssetView => Boolean(view));
@@ -766,22 +774,32 @@ function GenerationCanvasNode({
       </button>
 
       <div className="generation-node-content" data-canvas-control="true">
-        <div className="model-preset-switcher" aria-label="生图模型">
-          {IMAGE_MODEL_PRESETS.map((preset) => (
-            <button
-              key={preset.id}
-              className={preset.id === modelPreset.id ? "is-active" : ""}
-              type="button"
-              title={preset.description}
-              onClick={() => onChange({
+        <label className="model-select-field">
+          <span className="field-label">模型</span>
+          <select
+            value={modelPreset.id}
+            title={`模型：${modelPreset.name}`}
+            onChange={(event) => {
+              const preset = getImageModelPreset(event.currentTarget.value);
+              const resolution = preset.resolutions.includes(node.request.resolution)
+                ? node.request.resolution
+                : preset.defaultResolution;
+              onChange({
                 model: { provider: "server-gateway", model: preset.id },
-                resolution: preset.resolutions.includes(node.request.resolution) ? node.request.resolution : preset.defaultResolution,
-              })}
-            >
-              <span>{preset.shortName}</span><small>{preset.defaultResolution.toUpperCase()}</small>
-            </button>
-          ))}
-        </div>
+                resolution,
+                aspectRatio: normalizeImageAspectRatio(
+                  preset.id,
+                  resolution,
+                  node.request.aspectRatio,
+                ),
+              });
+            }}
+          >
+            {IMAGE_MODEL_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>{preset.name}</option>
+            ))}
+          </select>
+        </label>
 
         <div className="node-inputs-strip">
           <span className="field-label">输入</span>
@@ -835,16 +853,34 @@ function GenerationCanvasNode({
           />
         </label>
 
-        <footer className="generation-node-footer">
+        <footer className={aspectRatioValue.includes("x")
+          ? "generation-node-footer is-wide-ratio"
+          : "generation-node-footer"}
+        >
           <label>
             <span>比例</span>
-            <select value={node.request.aspectRatio} onChange={(event) => onChange({ aspectRatio: event.currentTarget.value as ImageGenerationRequest["aspectRatio"] })}>
-              <option value="1:1">1:1</option><option value="4:3">4:3</option><option value="3:4">3:4</option><option value="16:9">16:9</option><option value="9:16">9:16</option>
+            <select value={aspectRatioValue} onChange={(event) => onChange({ aspectRatio: event.currentTarget.value as ImageGenerationRequest["aspectRatio"] })}>
+              {aspectRatioOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
             </select>
           </label>
           <label>
             <span>清晰度</span>
-            <select value={node.request.resolution} onChange={(event) => onChange({ resolution: event.currentTarget.value as ImageGenerationRequest["resolution"] })}>
+            <select
+              value={node.request.resolution}
+              onChange={(event) => {
+                const resolution = event.currentTarget.value as ImageGenerationRequest["resolution"];
+                onChange({
+                  resolution,
+                  aspectRatio: normalizeImageAspectRatio(
+                    modelPreset.id,
+                    resolution,
+                    node.request.aspectRatio,
+                  ),
+                });
+              }}
+            >
               {modelPreset.resolutions.map((resolution) => <option key={resolution} value={resolution}>{resolution.toUpperCase()}</option>)}
             </select>
           </label>

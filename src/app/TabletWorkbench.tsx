@@ -18,6 +18,7 @@ import {
   IMAGE_RULE_PRESETS,
   isImageModelPresetId,
   mergeImageRuleStates,
+  normalizeImageAspectRatio,
 } from "../../shared";
 import { CanvasToolDock } from "../components/CanvasToolDock";
 import { ResourceRail, type ResourceSection } from "../components/ResourceRail";
@@ -217,7 +218,7 @@ export function TabletWorkbench() {
       prompt: "",
       inputAssetIds: [],
       model: MANAGED_IMAGE_MODEL,
-      aspectRatio: "1:1",
+      aspectRatio: "16:9",
       resolution: "2k",
       count: 4,
       createdAt: Date.now(),
@@ -640,6 +641,13 @@ function normalizeStoredNode(node: CanvasNode): CanvasNode {
       ...node.request,
       model: { provider: "server-gateway", model: preset.id },
       resolution: preset.resolutions.includes(node.request.resolution) ? node.request.resolution : preset.defaultResolution,
+      aspectRatio: normalizeImageAspectRatio(
+        preset.id,
+        preset.resolutions.includes(node.request.resolution)
+          ? node.request.resolution
+          : preset.defaultResolution,
+        node.request.aspectRatio,
+      ),
       ruleNodeIds: node.request.ruleNodeIds ?? [],
     },
   };
@@ -672,13 +680,17 @@ function getViewportCenter(viewport: CanvasViewport): CanvasPoint {
 }
 
 function generationPixelSize(aspectRatio: ImageGenerationRequest["aspectRatio"]) {
-  if (aspectRatio === "4:3" || aspectRatio === "16:9") {
-    return { width: 1536, height: 1024 };
+  const [rawWidth, rawHeight] = String(aspectRatio).split(/[x×:]/).map(Number);
+  if (!rawWidth || !rawHeight) {
+    return { width: 1024, height: 1024 };
   }
-  if (aspectRatio === "3:4" || aspectRatio === "9:16") {
-    return { width: 1024, height: 1536 };
+  if (String(aspectRatio).includes("x") || String(aspectRatio).includes("×")) {
+    return { width: rawWidth, height: rawHeight };
   }
-  return { width: 1024, height: 1024 };
+  const ratio = rawWidth / rawHeight;
+  return ratio >= 1
+    ? { width: 1536, height: Math.round(1536 / ratio) }
+    : { width: Math.round(1536 * ratio), height: 1536 };
 }
 
 function fitCanvasSize(asset: ImageAsset) {

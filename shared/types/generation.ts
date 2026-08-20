@@ -6,7 +6,8 @@ export type ImageGenerationProvider =
   | "bigmodel"
   | "custom";
 
-export type ImageAspectRatio = "1:1" | "4:3" | "3:4" | "16:9" | "9:16";
+export type StandardImageAspectRatio = "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
+export type ImageAspectRatio = StandardImageAspectRatio | `${number}x${number}`;
 export type ImageResolution = "1k" | "2k" | "4k";
 
 export interface ImageModelConfig {
