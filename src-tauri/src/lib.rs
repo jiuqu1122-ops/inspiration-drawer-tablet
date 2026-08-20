@@ -9,13 +9,16 @@ const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerateOpenAiImagesInput {
-    endpoint: Option<String>,
-    api_key: String,
-    model: String,
     prompt: String,
     size: String,
     quality: String,
     count: u8,
+}
+
+struct ImageGenerationConfig {
+    endpoint: Url,
+    api_key: String,
+    model: String,
 }
 
 #[derive(Serialize)]
@@ -29,38 +32,30 @@ struct NativeGeneratedImage {
 async fn generate_openai_images(
     input: GenerateOpenAiImagesInput,
 ) -> Result<Vec<NativeGeneratedImage>, String> {
-    let api_key = input.api_key.trim();
-    let model = input.model.trim();
+    let config = load_image_generation_config()?;
     let prompt = input.prompt.trim();
-    if api_key.is_empty() {
-        return Err("请先填写 API Key".to_string());
-    }
-    if model.is_empty() {
-        return Err("请先填写图片模型名称".to_string());
-    }
     if prompt.is_empty() {
         return Err("请输入生图描述".to_string());
     }
 
-    let endpoint = normalize_generation_endpoint(input.endpoint.as_deref().unwrap_or(""))?;
     let client = Client::builder()
         .timeout(Duration::from_secs(180))
         .build()
         .map_err(|error| format!("无法创建网络客户端：{error}"))?;
     let mut request_body = json!({
-        "model": model,
+        "model": &config.model,
         "prompt": prompt,
         "n": input.count.clamp(1, 4),
         "size": input.size,
         "quality": input.quality
     });
-    if model.to_ascii_lowercase().starts_with("dall-e") {
+    if config.model.to_ascii_lowercase().starts_with("dall-e") {
         request_body["response_format"] = Value::String("b64_json".to_string());
     }
 
     let response = client
-        .post(endpoint)
-        .bearer_auth(api_key)
+        .post(config.endpoint)
+        .bearer_auth(config.api_key)
         .json(&request_body)
         .send()
         .await
@@ -93,6 +88,28 @@ async fn generate_openai_images(
         images.push(resolve_image_source(&client, source).await?);
     }
     Ok(images)
+}
+
+fn load_image_generation_config() -> Result<ImageGenerationConfig, String> {
+    let api_key = std::env::var("INSPIRATION_DRAWER_IMAGE_API_KEY")
+        .ok()
+        .or_else(|| option_env!("INSPIRATION_DRAWER_IMAGE_API_KEY").map(str::to_string))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "生图服务尚未在当前应用版本中启用".to_string())?;
+    let endpoint = std::env::var("INSPIRATION_DRAWER_IMAGE_API_BASE_URL")
+        .ok()
+        .or_else(|| option_env!("INSPIRATION_DRAWER_IMAGE_API_BASE_URL").map(str::to_string))
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+    let model = std::env::var("INSPIRATION_DRAWER_IMAGE_MODEL")
+        .ok()
+        .or_else(|| option_env!("INSPIRATION_DRAWER_IMAGE_MODEL").map(str::to_string))
+        .unwrap_or_else(|| "gpt-image-1".to_string());
+
+    Ok(ImageGenerationConfig {
+        endpoint: normalize_generation_endpoint(&endpoint)?,
+        api_key,
+        model,
+    })
 }
 
 fn normalize_generation_endpoint(input: &str) -> Result<Url, String> {
@@ -134,7 +151,10 @@ fn collect_image_sources(payload: &Value) -> Vec<&str> {
     sources
 }
 
-async fn resolve_image_source(client: &Client, source: &str) -> Result<NativeGeneratedImage, String> {
+async fn resolve_image_source(
+    client: &Client,
+    source: &str,
+) -> Result<NativeGeneratedImage, String> {
     if source.starts_with("data:image/") {
         let mime_type = source
             .strip_prefix("data:")
@@ -170,7 +190,10 @@ async fn download_image(client: &Client, source: &str) -> Result<NativeGenerated
     if !response.status().is_success() {
         return Err(format!("下载生成图片失败，HTTP {}", response.status()));
     }
-    if response.content_length().is_some_and(|length| length as usize > MAX_IMAGE_BYTES) {
+    if response
+        .content_length()
+        .is_some_and(|length| length as usize > MAX_IMAGE_BYTES)
+    {
         return Err("生成图片超过 25 MB 限制".to_string());
     }
     let mime_type = response
@@ -211,16 +234,20 @@ mod tests {
     #[test]
     fn appends_openai_generation_path() {
         let endpoint = normalize_generation_endpoint("https://api.example.com/v1/").unwrap();
-        assert_eq!(endpoint.as_str(), "https://api.example.com/v1/images/generations");
+        assert_eq!(
+            endpoint.as_str(),
+            "https://api.example.com/v1/images/generations"
+        );
     }
 
     #[test]
     fn keeps_complete_generation_path() {
-        let endpoint = normalize_generation_endpoint(
-            "https://api.example.com/v1/images/generations",
-        )
-        .unwrap();
-        assert_eq!(endpoint.as_str(), "https://api.example.com/v1/images/generations");
+        let endpoint =
+            normalize_generation_endpoint("https://api.example.com/v1/images/generations").unwrap();
+        assert_eq!(
+            endpoint.as_str(),
+            "https://api.example.com/v1/images/generations"
+        );
     }
 
     #[test]

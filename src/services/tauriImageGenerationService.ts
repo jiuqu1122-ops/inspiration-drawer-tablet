@@ -14,8 +14,6 @@ interface NativeGeneratedImage {
 }
 
 export class TauriImageGenerationService implements ImageGenerationService {
-  constructor(private readonly apiKey: string) {}
-
   async generate(
     request: ImageGenerationRequest,
     context: ImageGenerationContext,
@@ -32,11 +30,11 @@ export class TauriImageGenerationService implements ImageGenerationService {
 
     const images = await invoke<NativeGeneratedImage[]>("generate_openai_images", {
       input: {
-        endpoint: request.model.endpoint,
-        apiKey: this.apiKey.trim(),
-        model: request.model.model,
         prompt: buildIndustrialDesignPrompt([
           request.prompt,
+          context.inputAssets.length
+            ? `Reference material count: ${context.inputAssets.length}. Preserve the connected references as the visual direction.`
+            : "No reference images are connected.",
           `Target aspect ratio: ${request.aspectRatio}. Detail tier: ${request.resolution}.`,
         ].join("\n")),
         size: getOpenAiSize(request.aspectRatio),

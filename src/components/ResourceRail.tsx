@@ -1,13 +1,22 @@
-import { Folders, ImageSquare, Plus, Toolbox } from "@phosphor-icons/react";
+import {
+  Folders,
+  ImageSquare,
+  MagnifyingGlass,
+  Plus,
+  Toolbox,
+  X,
+} from "@phosphor-icons/react";
 import type { CanvasAssetView } from "../features/canvas/CanvasStage";
 
 export type ResourceSection = "projects" | "materials" | "tools";
 
 interface ResourceRailProps {
   active: ResourceSection;
+  isOpen: boolean;
   assets: CanvasAssetView[];
   onAssetSelect: (assetId: string) => void;
   onChange: (section: ResourceSection) => void;
+  onOpenChange: (open: boolean) => void;
   onImport: () => void;
 }
 
@@ -23,62 +32,86 @@ const sections: Array<{
 
 export function ResourceRail({
   active,
+  isOpen,
   assets,
   onAssetSelect,
   onChange,
+  onOpenChange,
   onImport,
 }: ResourceRailProps) {
   const importedAssets = assets.filter((entry) => entry.asset.source === "device");
   const generatedAssets = assets.filter((entry) => entry.asset.source === "generated");
 
+  const selectSection = (section: ResourceSection) => {
+    if (isOpen && active === section) {
+      onOpenChange(false);
+      return;
+    }
+    onChange(section);
+    onOpenChange(true);
+  };
+
   return (
-    <aside className="resource-panel" aria-label="项目与素材">
+    <aside className={isOpen ? "resource-panel is-open" : "resource-panel"} aria-label="项目与素材">
       <nav className="resource-nav" aria-label="资源导航">
         {sections.map(({ id, label, icon: Icon }) => (
           <button
-            className={active === id ? "resource-nav-item is-active" : "resource-nav-item"}
+            className={isOpen && active === id ? "resource-nav-item is-active" : "resource-nav-item"}
             key={id}
             type="button"
-            aria-pressed={active === id}
-            onClick={() => onChange(id)}
+            aria-pressed={isOpen && active === id}
+            onClick={() => selectSection(id)}
           >
-            <Icon weight={active === id ? "fill" : "regular"} />
+            <Icon weight={isOpen && active === id ? "fill" : "regular"} />
             <span>{label}</span>
           </button>
         ))}
       </nav>
 
-      <div className="resource-content">
-        <div className="panel-heading">
+      <section className="resource-drawer" aria-hidden={!isOpen}>
+        <header className="resource-drawer-header">
           <div>
             <span className="eyebrow">LIBRARY</span>
             <h2>{active === "materials" ? "灵感素材" : active === "projects" ? "项目" : "设计工具"}</h2>
           </div>
-          <button className="small-action" type="button" onClick={active === "materials" ? onImport : undefined}>
-            {active === "materials" ? "导入" : "新建"}
+          <button className="drawer-close" type="button" onClick={() => onOpenChange(false)} aria-label="收起素材面板">
+            <X />
           </button>
-        </div>
+        </header>
 
         {active === "materials" ? (
-          <div className="resource-groups">
-            <ResourceGroup
-              label="本次导入"
-              assets={importedAssets}
-              onAssetSelect={onAssetSelect}
-              onImport={onImport}
-            />
-            <ResourceGroup
-              label="生成结果"
-              assets={generatedAssets}
-              onAssetSelect={onAssetSelect}
-            />
+          <>
+            <button className="material-import-action" type="button" onClick={onImport}>
+              <Plus weight="bold" />
+              <span>
+                <strong>从设备导入</strong>
+                <small>照片、截图与设计参考</small>
+              </span>
+            </button>
+            <label className="material-search">
+              <MagnifyingGlass />
+              <input type="search" placeholder="搜索素材" aria-label="搜索素材" />
+            </label>
+            <div className="resource-groups">
+              <ResourceGroup label="设备素材" assets={importedAssets} onAssetSelect={onAssetSelect} onImport={onImport} />
+              <ResourceGroup label="生成结果" assets={generatedAssets} onAssetSelect={onAssetSelect} />
+            </div>
+          </>
+        ) : active === "projects" ? (
+          <div className="project-list">
+            <button className="project-row is-current" type="button">
+              <span className="project-thumbnail"><ImageSquare /></span>
+              <span><strong>未命名工业设计项目</strong><small>{assets.length} 个素材 · 当前</small></span>
+            </button>
           </div>
         ) : (
           <div className="compact-empty">
-            <span>{active === "projects" ? "尚未创建更多项目" : "绘图工具将在手写笔阶段接入"}</span>
+            <Toolbox />
+            <strong>画笔工具将在下一阶段接入</strong>
+            <span>当前可使用节点、素材导入与触控画布。</span>
           </div>
         )}
-      </div>
+      </section>
     </aside>
   );
 }
@@ -107,10 +140,10 @@ function ResourceGroup({
               className="asset-tile"
               key={asset.id}
               type="button"
-              title={asset.name}
+              title={`${asset.name} · 点击添加到画布`}
               onClick={() => onAssetSelect(asset.id)}
             >
-              <img src={displayUri} alt="" />
+              <img src={displayUri} alt={asset.name} />
               <span>{asset.name}</span>
             </button>
           ))}
@@ -120,7 +153,7 @@ function ResourceGroup({
           <Plus />从设备添加图片
         </button>
       ) : (
-        <div className="resource-placeholder">暂无图片</div>
+        <div className="resource-placeholder">暂无生成结果</div>
       )}
     </section>
   );

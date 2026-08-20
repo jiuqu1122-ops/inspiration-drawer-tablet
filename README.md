@@ -4,13 +4,18 @@
 
 ## 当前能力
 
-- 横屏三栏工作台，竖屏 Canvas 优先并使用底部 AI 面板
+- 与 Windows 端统一的浅色点阵无限画布，横竖屏均以 Canvas 为主界面
+- 左侧窄工具轨与点击展开的素材管理抽屉，右侧节点工具条在竖屏自动转为底部工具条
 - 通过系统图片选择器批量导入设备图片
 - 图片与项目数据写入 WebView 的应用沙盒，不保存 Windows 路径
 - Pointer Events 画布：手指或手写笔拖动、画布平移、双指缩放、长按菜单
-- OpenAI-compatible 生图配置、原生 Rust 网络请求、生成任务节点与结果沙盒缓存
+- 节点式生图：节点内 Prompt、比例、清晰度、张数、运行状态与结果预览
+- 图片节点与生图节点可建立参考素材连线，生成结果自动保存到素材库
+- 原生 Rust 生图网络请求与结果沙盒缓存
 
-API Key 仅保留在当前应用运行内存中，不写入项目或本地数据库。
+应用界面不提供 API 地址、模型或密钥输入。发行构建由应用侧通过
+`INSPIRATION_DRAWER_IMAGE_API_KEY`、`INSPIRATION_DRAWER_IMAGE_API_BASE_URL` 和
+`INSPIRATION_DRAWER_IMAGE_MODEL` 注入生图服务配置，密钥不会写入项目或本地数据库。
 
 ## Web 与桌面预览
 

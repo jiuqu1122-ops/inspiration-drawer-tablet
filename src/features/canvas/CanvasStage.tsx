@@ -2,26 +2,37 @@ import {
   DotsThree,
   HandTap,
   ImageSquare,
+  Link,
+  MagicWand,
+  Play,
   Trash,
+  X,
 } from "@phosphor-icons/react";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type {
+  CanvasGenerationNode,
   CanvasNode,
   CanvasPoint,
   CanvasViewport,
   ImageAsset,
+  ImageGenerationRequest,
 } from "../../../shared";
 
 export interface CanvasAssetView {
   asset: ImageAsset;
   displayUri: string;
 }
+
+export type GenerationNodeUpdate = Partial<
+  Pick<ImageGenerationRequest, "prompt" | "aspectRatio" | "resolution" | "count">
+>;
 
 interface CanvasStageProps {
   nodes: CanvasNode[];
@@ -34,6 +45,10 @@ interface CanvasStageProps {
   onNodeMove: (nodeId: string, point: CanvasPoint) => void;
   onNodeRemove: (nodeId: string) => void;
   onSelectNode: (nodeId?: string) => void;
+  onGenerationChange: (nodeId: string, update: GenerationNodeUpdate) => void;
+  onRunGeneration: (nodeId: string) => void;
+  onConnect: (sourceNodeId: string, targetNodeId: string) => void;
+  onDisconnectReference: (targetNodeId: string, assetId: string) => void;
 }
 
 type Gesture =
@@ -78,6 +93,10 @@ export function CanvasStage({
   onNodeMove,
   onNodeRemove,
   onSelectNode,
+  onGenerationChange,
+  onRunGeneration,
+  onConnect,
+  onDisconnectReference,
 }: CanvasStageProps) {
   const stageRef = useRef<HTMLDivElement>(null);
   const viewportLayerRef = useRef<HTMLDivElement>(null);
@@ -88,8 +107,13 @@ export function CanvasStage({
   const longPressTimerRef = useRef<number | undefined>(undefined);
   const longPressOriginRef = useRef<CanvasPoint | undefined>(undefined);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
+  const [connectionSourceId, setConnectionSourceId] = useState<string>();
 
-  const assetsById = new Map(assets.map((entry) => [entry.asset.id, entry]));
+  const assetsById = useMemo(
+    () => new Map(assets.map((entry) => [entry.asset.id, entry])),
+    [assets],
+  );
+  const connections = useMemo(() => collectConnections(nodes), [nodes]);
 
   const applyViewport = useCallback((next: CanvasViewport) => {
     liveViewportRef.current = next;
@@ -138,6 +162,9 @@ export function CanvasStage({
   }, []);
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest("[data-canvas-control='true']")) {
+      return;
+    }
     if (event.button !== 0 && event.pointerType === "mouse") {
       return;
     }
@@ -179,6 +206,7 @@ export function CanvasStage({
       return;
     }
 
+    setConnectionSourceId(undefined);
     onSelectNode(undefined);
     gestureRef.current = {
       mode: "pan",
@@ -296,50 +324,68 @@ export function CanvasStage({
     >
       <div className="canvas-grid" aria-hidden="true" />
       <div ref={viewportLayerRef} className="canvas-viewport">
+        <svg className="node-connections" aria-hidden="true">
+          <defs>
+            <linearGradient id="node-connection-gradient" gradientUnits="userSpaceOnUse" x1="0" x2="420">
+              <stop offset="0" stopColor="#10bce5" />
+              <stop offset="1" stopColor="#e2b841" />
+            </linearGradient>
+          </defs>
+          {connections.map(({ source, target, key }, index) => {
+            const start = { x: source.x + source.width + 8, y: source.y + source.height / 2 };
+            const end = { x: target.x - 8, y: target.y + 76 + index * 2 };
+            const path = createConnectionPath(start, end);
+            return (
+              <g key={key}>
+                <path className="node-connection-halo" d={path} />
+                <path className="node-connection-line" d={path} />
+                <circle className="connection-point source" cx={start.x} cy={start.y} r="5" />
+                <circle className="connection-point target" cx={end.x} cy={end.y} r="5" />
+              </g>
+            );
+          })}
+        </svg>
+
         {nodes.map((node) => {
-          const assetView = node.type === "image"
-            ? assetsById.get(node.assetId)
-            : assetsById.get(node.results[0]?.id);
-          if (node.type === "image" && !assetView) {
-            return null;
+          if (node.type === "image") {
+            const assetView = assetsById.get(node.assetId);
+            if (!assetView) {
+              return null;
+            }
+            return (
+              <ImageCanvasNode
+                key={node.id}
+                node={node}
+                assetView={assetView}
+                isSelected={selectedNodeId === node.id}
+                isConnectionSource={connectionSourceId === node.id}
+                registerElement={(element) => registerNodeElement(node.id, element, nodeElementsRef.current)}
+                onArmConnection={() => {
+                  setConnectionSourceId((current) => current === node.id ? undefined : node.id);
+                  onSelectNode(node.id);
+                }}
+              />
+            );
           }
 
-          const stateClass = node.type === "generation" ? ` is-${node.status}` : "";
-
           return (
-            <div
+            <GenerationCanvasNode
               key={node.id}
-              ref={(element) => {
-                if (element) {
-                  nodeElementsRef.current.set(node.id, element);
-                } else {
-                  nodeElementsRef.current.delete(node.id);
+              node={node}
+              assetsById={assetsById}
+              isSelected={selectedNodeId === node.id}
+              hasPendingConnection={Boolean(connectionSourceId)}
+              registerElement={(element) => registerNodeElement(node.id, element, nodeElementsRef.current)}
+              onAcceptConnection={() => {
+                if (connectionSourceId) {
+                  onConnect(connectionSourceId, node.id);
+                  setConnectionSourceId(undefined);
                 }
               }}
-              className={`${selectedNodeId === node.id ? "canvas-node is-selected" : "canvas-node"}${stateClass}`}
-              data-canvas-node-id={node.id}
-              style={{
-                width: node.width,
-                height: node.height,
-                transform: `translate3d(${node.x}px, ${node.y}px, 0)`,
-                zIndex: node.zIndex,
-              }}
-            >
-              {assetView ? (
-                <img src={assetView.displayUri} alt={node.title} draggable={false} />
-              ) : node.type === "generation" ? (
-                <div className="generation-node-state">
-                  {node.status === "running" ? <span className="generation-spinner" /> : <MagicPromptIcon />}
-                  <strong>{node.status === "error" ? "生成失败" : "正在生成概念图"}</strong>
-                  <p>{node.status === "error" ? node.error : node.request.prompt}</p>
-                </div>
-              ) : null}
-              <span className="node-title">{node.title}</span>
-              {node.type === "generation" && node.status === "success" && node.results.length > 1 && (
-                <span className="node-result-count">+{node.results.length - 1}</span>
-              )}
-              <span className="node-more" aria-hidden="true"><DotsThree weight="bold" /></span>
-            </div>
+              onChange={(update) => onGenerationChange(node.id, update)}
+              onRun={() => onRunGeneration(node.id)}
+              onDisconnectReference={(assetId) => onDisconnectReference(node.id, assetId)}
+            />
           );
         })}
       </div>
@@ -347,17 +393,24 @@ export function CanvasStage({
       {nodes.length === 0 && (
         <div className="canvas-empty-state">
           <span className="canvas-empty-icon"><ImageSquare /></span>
-          <span className="eyebrow">EMPTY CANVAS</span>
-          <h1>把灵感放进画布</h1>
-          <p>从设备导入图片素材，或使用 AI 生成第一张产品概念图。</p>
-          <div className="canvas-empty-actions">
-            <button className="primary-action" type="button" onClick={onImportRequest}>
+          <span className="eyebrow">INFINITE CANVAS</span>
+          <h1>从一张灵感，开始设计</h1>
+          <p>导入手机图片作为参考，或新建生图节点。所有素材和生成结果都会留在这张画布上。</p>
+          <div className="canvas-empty-actions" data-canvas-control="true">
+            <button className="secondary-action" type="button" onClick={onImportRequest}>
               <ImageSquare />导入图片
             </button>
-            <button className="canvas-text-action" type="button" onClick={onGenerateRequest}>
-              <span aria-hidden="true">✦</span>开始生成
+            <button className="primary-action" type="button" onClick={onGenerateRequest}>
+              <MagicWand />新建生图节点
             </button>
           </div>
+        </div>
+      )}
+
+      {connectionSourceId && (
+        <div className="connection-hint" data-canvas-control="true">
+          <Link />已选择参考图，点击生图节点左侧连接点
+          <button type="button" onClick={() => setConnectionSourceId(undefined)} aria-label="取消连接"><X /></button>
         </div>
       )}
 
@@ -365,7 +418,7 @@ export function CanvasStage({
         <div
           className="canvas-context-menu"
           style={{ left: contextMenu.left, top: contextMenu.top }}
-          onPointerDown={(event) => event.stopPropagation()}
+          data-canvas-control="true"
         >
           <button
             type="button"
@@ -381,10 +434,235 @@ export function CanvasStage({
 
       <div className="gesture-hint">
         <HandTap />
-        <span>双指缩放 · 拖动画布 · 长按打开菜单</span>
+        <span>双指缩放 · 拖动画布 · 长按节点</span>
       </div>
     </div>
   );
+}
+
+function ImageCanvasNode({
+  node,
+  assetView,
+  isSelected,
+  isConnectionSource,
+  registerElement,
+  onArmConnection,
+}: {
+  node: Extract<CanvasNode, { type: "image" }>;
+  assetView: CanvasAssetView;
+  isSelected: boolean;
+  isConnectionSource: boolean;
+  registerElement: (element: HTMLDivElement | null) => void;
+  onArmConnection: () => void;
+}) {
+  return (
+    <div
+      ref={registerElement}
+      className={`${isSelected ? "canvas-node image-node is-selected" : "canvas-node image-node"}${isConnectionSource ? " is-connection-source" : ""}`}
+      data-canvas-node-id={node.id}
+      style={{
+        width: node.width,
+        height: node.height,
+        transform: `translate3d(${node.x}px, ${node.y}px, 0)`,
+        zIndex: node.zIndex,
+      }}
+    >
+      <img src={assetView.displayUri} alt={node.title} draggable={false} />
+      <span className="node-title">{node.title}</span>
+      <span className="node-more" aria-hidden="true"><DotsThree weight="bold" /></span>
+      <button
+        className="node-port output-port"
+        type="button"
+        data-canvas-control="true"
+        aria-pressed={isConnectionSource}
+        aria-label="把图片连接到生图节点"
+        onClick={onArmConnection}
+      >
+        <span />
+      </button>
+    </div>
+  );
+}
+
+function GenerationCanvasNode({
+  node,
+  assetsById,
+  isSelected,
+  hasPendingConnection,
+  registerElement,
+  onAcceptConnection,
+  onChange,
+  onRun,
+  onDisconnectReference,
+}: {
+  node: CanvasGenerationNode;
+  assetsById: Map<string, CanvasAssetView>;
+  isSelected: boolean;
+  hasPendingConnection: boolean;
+  registerElement: (element: HTMLDivElement | null) => void;
+  onAcceptConnection: () => void;
+  onChange: (update: GenerationNodeUpdate) => void;
+  onRun: () => void;
+  onDisconnectReference: (assetId: string) => void;
+}) {
+  const resultViews = node.results
+    .map((result) => assetsById.get(result.id))
+    .filter((view): view is CanvasAssetView => Boolean(view));
+  const referenceViews = node.request.inputAssetIds
+    .map((assetId) => assetsById.get(assetId))
+    .filter((view): view is CanvasAssetView => Boolean(view));
+  const statusLabel = node.status === "running"
+    ? "生成中"
+    : node.status === "success"
+      ? "完成"
+      : node.status === "error"
+        ? "失败"
+        : "待运行";
+
+  return (
+    <div
+      ref={registerElement}
+      className={`${isSelected ? "canvas-node generation-node is-selected" : "canvas-node generation-node"} is-${node.status}`}
+      data-canvas-node-id={node.id}
+      style={{
+        width: node.width,
+        height: node.height,
+        transform: `translate3d(${node.x}px, ${node.y}px, 0)`,
+        zIndex: node.zIndex,
+      }}
+    >
+      <header className="generation-node-header">
+        <span className="generation-node-icon"><MagicWand weight="fill" /></span>
+        <span><strong>{node.title}</strong><small>{referenceViews.length} 张参考图</small></span>
+        <span className={`node-status is-${node.status}`}>{statusLabel}</span>
+      </header>
+
+      <button
+        className={hasPendingConnection ? "node-port input-port is-ready" : "node-port input-port"}
+        type="button"
+        data-canvas-control="true"
+        aria-label="接收参考图片连接"
+        onClick={onAcceptConnection}
+      >
+        <span />
+      </button>
+
+      <div className="generation-node-content" data-canvas-control="true">
+        <div className="reference-strip">
+          <span className="field-label">参考图</span>
+          <div className="reference-items">
+            {referenceViews.length ? referenceViews.map(({ asset, displayUri }) => (
+              <span className="reference-thumb" key={asset.id}>
+                <img src={displayUri} alt={asset.name} />
+                <button type="button" onClick={() => onDisconnectReference(asset.id)} aria-label={`移除参考图 ${asset.name}`}>
+                  <X />
+                </button>
+              </span>
+            )) : (
+              <span className="reference-empty"><Link />从图片节点连接参考素材</span>
+            )}
+          </div>
+        </div>
+
+        <div className={`generation-preview is-${node.status}`}>
+          {resultViews.length ? (
+            <div className={`generation-result-grid count-${Math.min(resultViews.length, 4)}`}>
+              {resultViews.slice(0, 4).map(({ asset, displayUri }, index) => (
+                <img key={asset.id} src={displayUri} alt={`${node.title} 结果 ${index + 1}`} />
+              ))}
+            </div>
+          ) : node.status === "running" ? (
+            <div className="generation-preview-state"><span className="generation-spinner" /><strong>正在生成产品概念图</strong><small>结果会直接保存在素材库</small></div>
+          ) : node.status === "error" ? (
+            <div className="generation-preview-state is-error"><span>!</span><strong>生成失败</strong><small>{node.error}</small></div>
+          ) : (
+            <div className="generation-preview-state"><MagicWand /><strong>生成结果</strong><small>填写描述后运行当前节点</small></div>
+          )}
+        </div>
+
+        <label className="node-prompt-field">
+          <span className="field-label">描述产品设计任务</span>
+          <textarea
+            value={node.request.prompt}
+            placeholder="例如：便携式桌面投影仪，圆润一体化机身，磨砂铝与暖灰织物 CMF，工作室产品摄影……"
+            onChange={(event) => onChange({ prompt: event.currentTarget.value })}
+          />
+        </label>
+
+        <footer className="generation-node-footer">
+          <label>
+            <span>比例</span>
+            <select value={node.request.aspectRatio} onChange={(event) => onChange({ aspectRatio: event.currentTarget.value as ImageGenerationRequest["aspectRatio"] })}>
+              <option value="1:1">1:1</option>
+              <option value="4:3">4:3</option>
+              <option value="3:4">3:4</option>
+              <option value="16:9">16:9</option>
+              <option value="9:16">9:16</option>
+            </select>
+          </label>
+          <label>
+            <span>清晰度</span>
+            <select value={node.request.resolution} onChange={(event) => onChange({ resolution: event.currentTarget.value as ImageGenerationRequest["resolution"] })}>
+              <option value="1k">1K</option>
+              <option value="2k">2K</option>
+              <option value="4k">4K</option>
+            </select>
+          </label>
+          <label>
+            <span>张数</span>
+            <select value={node.request.count} onChange={(event) => onChange({ count: Number(event.currentTarget.value) })}>
+              <option value={1}>1</option>
+              <option value={2}>2</option>
+              <option value={4}>4</option>
+            </select>
+          </label>
+          <button className="node-run-action" type="button" onClick={onRun} disabled={node.status === "running" || !node.request.prompt.trim()}>
+            {node.status === "running" ? <span className="button-spinner" /> : <Play weight="fill" />}
+            <span>{node.status === "running" ? "生成中" : "运行"}</span>
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function collectConnections(nodes: CanvasNode[]) {
+  const imageNodes = nodes.filter((node): node is Extract<CanvasNode, { type: "image" }> => node.type === "image");
+  const connections: Array<{
+    source: Extract<CanvasNode, { type: "image" }>;
+    target: CanvasGenerationNode;
+    key: string;
+  }> = [];
+
+  for (const target of nodes) {
+    if (target.type !== "generation") {
+      continue;
+    }
+    target.request.inputAssetIds.forEach((assetId) => {
+      const source = imageNodes.find((node) => node.assetId === assetId);
+      if (source) {
+        connections.push({ source, target, key: `${source.id}-${target.id}` });
+      }
+    });
+  }
+  return connections;
+}
+
+function createConnectionPath(start: CanvasPoint, end: CanvasPoint): string {
+  const distance = Math.max(Math.abs(end.x - start.x) * 0.46, 70);
+  return `M ${start.x} ${start.y} C ${start.x + distance} ${start.y}, ${end.x - distance} ${end.y}, ${end.x} ${end.y}`;
+}
+
+function registerNodeElement(
+  nodeId: string,
+  element: HTMLDivElement | null,
+  elements: Map<string, HTMLDivElement>,
+) {
+  if (element) {
+    elements.set(nodeId, element);
+  } else {
+    elements.delete(nodeId);
+  }
 }
 
 function getDistance(first: CanvasPoint, second: CanvasPoint): number {
@@ -397,8 +675,4 @@ function getMidpoint(first: CanvasPoint, second: CanvasPoint): CanvasPoint {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
-}
-
-function MagicPromptIcon() {
-  return <span className="generation-error-icon" aria-hidden="true">!</span>;
 }

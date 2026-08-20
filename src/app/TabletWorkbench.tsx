@@ -3,22 +3,20 @@ import type {
   CanvasGenerationNode,
   CanvasImageNode,
   CanvasNode,
+  CanvasPoint,
   CanvasProject,
   CanvasViewport,
   GeneratedImageResult,
   ImageAsset,
   ImageGenerationRequest,
 } from "../../shared";
-import {
-  AssistantPanel,
-  type AssistantTab,
-  type GenerationSettings,
-} from "../components/AssistantPanel";
+import { CanvasToolDock } from "../components/CanvasToolDock";
 import { ResourceRail, type ResourceSection } from "../components/ResourceRail";
 import { TopBar } from "../components/TopBar";
 import {
   CanvasStage,
   type CanvasAssetView,
+  type GenerationNodeUpdate,
 } from "../features/canvas/CanvasStage";
 import { readDeviceImage } from "../features/inspiration/readDeviceImages";
 import { TauriImageGenerationService } from "../services/tauriImageGenerationService";
@@ -27,13 +25,9 @@ import { createId } from "../utils/id";
 
 const DEFAULT_PROJECT_ID = "tablet-local-project";
 const DEFAULT_VIEWPORT: CanvasViewport = { x: 0, y: 0, scale: 1 };
-const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
-  endpoint: "https://api.openai.com/v1",
-  apiKey: "",
-  model: "gpt-image-1",
-  aspectRatio: "1:1",
-  resolution: "1k",
-  count: 1,
+const MANAGED_IMAGE_MODEL = {
+  provider: "openai-compatible" as const,
+  model: "managed-image",
 };
 
 interface WorkbenchNotice {
@@ -43,16 +37,13 @@ interface WorkbenchNotice {
 
 export function TabletWorkbench() {
   const [resourceSection, setResourceSection] = useState<ResourceSection>("materials");
-  const [assistantTab, setAssistantTab] = useState<AssistantTab>("prompt");
-  const [prompt, setPrompt] = useState("");
-  const [generationSettings, setGenerationSettings] = useState(DEFAULT_GENERATION_SETTINGS);
+  const [isResourceDrawerOpen, setIsResourceDrawerOpen] = useState(false);
   const [assets, setAssets] = useState<CanvasAssetView[]>([]);
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [viewport, setViewport] = useState(DEFAULT_VIEWPORT);
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
   const [notice, setNotice] = useState<WorkbenchNotice>();
   const [isImporting, setIsImporting] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hydratedRef = useRef(false);
 
@@ -83,7 +74,7 @@ export function TabletWorkbench() {
             .map((result) => result.value),
         );
         if (project) {
-          setNodes(project.nodes);
+          setNodes(project.nodes.map(normalizeStoredNode));
           setViewport(project.viewport);
         }
         hydratedRef.current = true;
@@ -122,6 +113,14 @@ export function TabletWorkbench() {
     return () => window.clearTimeout(timer);
   }, [nodes, viewport]);
 
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+    const timer = window.setTimeout(() => setNotice(undefined), notice.tone === "error" ? 5200 : 2800);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
   const requestImageImport = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
@@ -150,15 +149,20 @@ export function TabletWorkbench() {
         }),
       );
 
-      setAssets((current) => [...imported.reverse(), ...current]);
+      setAssets((current) => [...imported.slice().reverse(), ...current]);
       setNodes((current) => {
+        const center = getViewportCenter(viewport);
         const appended = imported.map((entry, index) =>
-          createImageNode(entry.asset, current.length + index),
+          createImageNode(entry.asset, current.length + index, {
+            x: center.x - 360 + index * 34,
+            y: center.y - 170 + index * 30,
+          }),
         );
         setSelectedNodeId(appended[appended.length - 1]?.id);
         return [...current, ...appended];
       });
       setResourceSection("materials");
+      setIsResourceDrawerOpen(true);
       setNotice({ tone: "success", message: `已导入 ${imported.length} 张图片到画布` });
     } catch (error) {
       setNotice({ tone: "error", message: getErrorMessage(error, "图片导入失败") });
@@ -171,63 +175,87 @@ export function TabletWorkbench() {
   };
 
   const addAssetToCanvas = (assetId: string) => {
-    const existing = nodes.find((node) =>
-      node.type === "image"
-        ? node.assetId === assetId
-        : node.results.some((result) => result.id === assetId),
-    );
+    const existing = nodes.find((node) => node.type === "image" && node.assetId === assetId);
     if (existing) {
       setSelectedNodeId(existing.id);
+      setIsResourceDrawerOpen(false);
       return;
     }
     const asset = assets.find((entry) => entry.asset.id === assetId)?.asset;
     if (!asset) {
       return;
     }
-    const node = createImageNode(asset, nodes.length);
+    const center = getViewportCenter(viewport);
+    const node = createImageNode(asset, nodes.length, {
+      x: center.x - 160,
+      y: center.y - 120,
+    });
     setNodes((current) => [...current, node]);
     setSelectedNodeId(node.id);
+    setIsResourceDrawerOpen(false);
   };
 
-  const openGenerationPrompt = () => {
-    setAssistantTab("prompt");
-    setNotice({ tone: "neutral", message: "描述产品概念后即可创建生成任务" });
+  const addGenerationNode = () => {
+    const center = getViewportCenter(viewport);
+    const request: ImageGenerationRequest = {
+      id: createId("generation-request"),
+      prompt: "",
+      inputAssetIds: [],
+      model: MANAGED_IMAGE_MODEL,
+      aspectRatio: "1:1",
+      resolution: "1k",
+      count: 4,
+      createdAt: Date.now(),
+    };
+    const generationNode = createGenerationNode(request, nodes.length, {
+      x: center.x - 186,
+      y: center.y - 250,
+    });
+    setNodes((current) => [...current, generationNode]);
+    setSelectedNodeId(generationNode.id);
+    setIsResourceDrawerOpen(false);
+    setNotice({ tone: "neutral", message: "已创建生图节点，在节点内描述设计任务即可运行" });
   };
 
-  const generateImage = async () => {
-    const cleanPrompt = prompt.trim();
-    if (!cleanPrompt) {
-      setNotice({ tone: "error", message: "请先输入产品设计描述" });
+  const updateGenerationNode = (nodeId: string, update: GenerationNodeUpdate) => {
+    setNodes((current) => current.map((node) =>
+      node.id === nodeId && node.type === "generation"
+        ? { ...node, request: { ...node.request, ...update } }
+        : node,
+    ));
+  };
+
+  const runGenerationNode = async (nodeId: string) => {
+    const sourceNode = nodes.find((node): node is CanvasGenerationNode => node.id === nodeId && node.type === "generation");
+    if (!sourceNode) {
       return;
     }
-    if (!generationSettings.endpoint.trim() || !generationSettings.model.trim() || !generationSettings.apiKey.trim()) {
-      setNotice({ tone: "error", message: "请先完成模型、接口地址和 API Key 配置" });
+    const cleanPrompt = sourceNode.request.prompt.trim();
+    if (!cleanPrompt) {
+      setNotice({ tone: "error", message: "请先在生图节点中描述产品设计任务" });
       return;
     }
 
     const request: ImageGenerationRequest = {
+      ...sourceNode.request,
       id: createId("generation-request"),
       prompt: cleanPrompt,
-      inputAssetIds: [],
-      model: {
-        provider: "openai-compatible",
-        endpoint: generationSettings.endpoint.trim(),
-        model: generationSettings.model.trim(),
-      },
-      aspectRatio: generationSettings.aspectRatio,
-      resolution: generationSettings.resolution,
-      count: generationSettings.count,
       createdAt: Date.now(),
     };
-    const generationNode = createGenerationNode(request, nodes.length);
-    setNodes((current) => [...current, generationNode]);
-    setSelectedNodeId(generationNode.id);
-    setIsGenerating(true);
+    setNodes((current) => current.map((node) =>
+      node.id === nodeId && node.type === "generation"
+        ? { ...node, request, status: "running", error: undefined }
+        : node,
+    ));
+    setSelectedNodeId(nodeId);
     setNotice({ tone: "neutral", message: "正在生成产品概念图" });
 
     try {
-      const service = new TauriImageGenerationService(generationSettings.apiKey);
-      const results = await service.generate(request, { inputAssets: [] });
+      const inputAssets = request.inputAssetIds
+        .map((assetId) => assets.find((entry) => entry.asset.id === assetId)?.asset)
+        .filter((asset): asset is ImageAsset => Boolean(asset));
+      const service = new TauriImageGenerationService();
+      const results = await service.generate(request, { inputAssets });
       const savedEntries = await Promise.all(results.map(async (result, index) => {
         const asset = await tabletStorage.saveGeneratedImage(
           createGeneratedAsset(result, request, index),
@@ -247,26 +275,112 @@ export function TabletWorkbench() {
         createdAt: asset.createdAt,
       }));
 
-      setAssets((current) => [...savedEntries.reverse(), ...current]);
+      setAssets((current) => [...savedEntries.slice().reverse(), ...current]);
       setNodes((current) => current.map((node) =>
-        node.id === generationNode.id && node.type === "generation"
-          ? { ...node, status: "success", results: storedResults }
+        node.id === nodeId && node.type === "generation"
+          ? { ...node, status: "success", results: storedResults, error: undefined }
           : node,
       ));
-      setResourceSection("materials");
-      setNotice({ tone: "success", message: `已生成 ${storedResults.length} 张图片并保存到沙盒` });
+      setNotice({ tone: "success", message: `已生成 ${storedResults.length} 张图片并保存到素材库` });
     } catch (error) {
       const message = getErrorMessage(error, "图片生成失败");
       setNodes((current) => current.map((node) =>
-        node.id === generationNode.id && node.type === "generation"
+        node.id === nodeId && node.type === "generation"
           ? { ...node, status: "error", error: message }
           : node,
       ));
       setNotice({ tone: "error", message });
-    } finally {
-      setIsGenerating(false);
     }
   };
+
+  const connectNodes = (sourceNodeId: string, targetNodeId: string) => {
+    const source = nodes.find((node): node is CanvasImageNode => node.id === sourceNodeId && node.type === "image");
+    if (!source) {
+      return;
+    }
+    setNodes((current) => current.map((node) => {
+      if (node.id !== targetNodeId || node.type !== "generation" || node.request.inputAssetIds.includes(source.assetId)) {
+        return node;
+      }
+      return {
+        ...node,
+        request: {
+          ...node.request,
+          inputAssetIds: [...node.request.inputAssetIds, source.assetId],
+        },
+      };
+    }));
+    setSelectedNodeId(targetNodeId);
+    setNotice({ tone: "success", message: "参考图片已连接到生图节点" });
+  };
+
+  const disconnectReference = (targetNodeId: string, assetId: string) => {
+    setNodes((current) => current.map((node) =>
+      node.id === targetNodeId && node.type === "generation"
+        ? {
+            ...node,
+            request: {
+              ...node.request,
+              inputAssetIds: node.request.inputAssetIds.filter((candidate) => candidate !== assetId),
+            },
+          }
+        : node,
+    ));
+  };
+
+  const removeNode = (nodeId: string) => {
+    setNodes((current) => {
+      const removed = current.find((node) => node.id === nodeId);
+      return current
+        .filter((node) => node.id !== nodeId)
+        .map((node) => removed?.type === "image" && node.type === "generation"
+          ? {
+              ...node,
+              request: {
+                ...node.request,
+                inputAssetIds: node.request.inputAssetIds.filter((assetId) => assetId !== removed.assetId),
+              },
+            }
+          : node);
+    });
+    setSelectedNodeId(undefined);
+  };
+
+  const runSelectedGeneration = () => {
+    const selected = nodes.find((node): node is CanvasGenerationNode => node.id === selectedNodeId && node.type === "generation");
+    const fallback = [...nodes].reverse().find((node): node is CanvasGenerationNode => node.type === "generation");
+    const target = selected ?? fallback;
+    if (target) {
+      void runGenerationNode(target.id);
+    }
+  };
+
+  const arrangeCanvas = () => {
+    let imageIndex = 0;
+    let generationIndex = 0;
+    setNodes((current) => current.map((node) => {
+      if (node.type === "image") {
+        const index = imageIndex++;
+        return {
+          ...node,
+          x: 96 + (index % 2) * 380,
+          y: 96 + Math.floor(index / 2) * 330,
+          zIndex: index + 1,
+        };
+      }
+      const index = generationIndex++;
+      return {
+        ...node,
+        x: 930 + (index % 2) * 430,
+        y: 84 + Math.floor(index / 2) * 550,
+        zIndex: imageIndex + index + 20,
+      };
+    }));
+    setViewport({ x: 78, y: 56, scale: 0.72 });
+    setNotice({ tone: "success", message: "已按素材与生图节点整理画布" });
+  };
+
+  const canRunGeneration = nodes.some((node) => node.type === "generation" && node.status !== "running");
 
   return (
     <main className="tablet-app">
@@ -274,7 +388,7 @@ export function TabletWorkbench() {
         zoom={Math.round(viewport.scale * 100)}
         isImporting={isImporting}
         onImport={requestImageImport}
-        onGenerate={openGenerationPrompt}
+        onAddGeneration={addGenerationNode}
       />
       <input
         ref={fileInputRef}
@@ -284,48 +398,48 @@ export function TabletWorkbench() {
         multiple
         onChange={(event) => void handleDeviceImages(event.currentTarget.files)}
       />
-      <div className="workbench">
-        <ResourceRail
-          active={resourceSection}
+
+      <section className="canvas-shell" aria-label="设计画布">
+        <CanvasStage
+          nodes={nodes}
           assets={assets}
-          onAssetSelect={addAssetToCanvas}
-          onChange={setResourceSection}
-          onImport={requestImageImport}
+          viewport={viewport}
+          selectedNodeId={selectedNodeId}
+          onImportRequest={requestImageImport}
+          onGenerateRequest={addGenerationNode}
+          onViewportChange={setViewport}
+          onNodeMove={(nodeId, point) => {
+            setNodes((current) => current.map((node) =>
+              node.id === nodeId ? { ...node, ...point } : node,
+            ));
+          }}
+          onNodeRemove={removeNode}
+          onSelectNode={setSelectedNodeId}
+          onGenerationChange={updateGenerationNode}
+          onRunGeneration={(nodeId) => void runGenerationNode(nodeId)}
+          onConnect={connectNodes}
+          onDisconnectReference={disconnectReference}
         />
+      </section>
 
-        <section className="canvas-shell" aria-label="设计画布">
-          <CanvasStage
-            nodes={nodes}
-            assets={assets}
-            viewport={viewport}
-            selectedNodeId={selectedNodeId}
-            onImportRequest={requestImageImport}
-            onGenerateRequest={openGenerationPrompt}
-            onViewportChange={setViewport}
-            onNodeMove={(nodeId, point) => {
-              setNodes((current) => current.map((node) =>
-                node.id === nodeId ? { ...node, ...point } : node,
-              ));
-            }}
-            onNodeRemove={(nodeId) => {
-              setNodes((current) => current.filter((node) => node.id !== nodeId));
-              setSelectedNodeId(undefined);
-            }}
-            onSelectNode={setSelectedNodeId}
-          />
-        </section>
+      <ResourceRail
+        active={resourceSection}
+        isOpen={isResourceDrawerOpen}
+        assets={assets}
+        onAssetSelect={addAssetToCanvas}
+        onChange={setResourceSection}
+        onOpenChange={setIsResourceDrawerOpen}
+        onImport={requestImageImport}
+      />
 
-        <AssistantPanel
-          activeTab={assistantTab}
-          onTabChange={setAssistantTab}
-          prompt={prompt}
-          onPromptChange={setPrompt}
-          settings={generationSettings}
-          onSettingsChange={setGenerationSettings}
-          isGenerating={isGenerating}
-          onGenerate={() => void generateImage()}
-        />
-      </div>
+      <CanvasToolDock
+        canRun={canRunGeneration}
+        onImport={requestImageImport}
+        onAddGeneration={addGenerationNode}
+        onRun={runSelectedGeneration}
+        onArrange={arrangeCanvas}
+        onWorkflow={() => setNotice({ tone: "neutral", message: "工作流将在节点基础能力完成后接入" })}
+      />
 
       {notice && (
         <div className={`workbench-notice is-${notice.tone}`} role="status" aria-live="polite">
@@ -336,15 +450,15 @@ export function TabletWorkbench() {
   );
 }
 
-function createImageNode(asset: ImageAsset, index: number): CanvasImageNode {
+function createImageNode(asset: ImageAsset, index: number, point: CanvasPoint): CanvasImageNode {
   const size = fitCanvasSize(asset);
   return {
     id: createId("canvas-image"),
     type: "image",
     assetId: asset.id,
     title: asset.name.replace(/\.[^/.]+$/, ""),
-    x: 64 + (index % 3) * 54,
-    y: 64 + (index % 4) * 42,
+    x: point.x,
+    y: point.y,
     width: size.width,
     height: size.height,
     zIndex: index + 1,
@@ -355,21 +469,33 @@ function createImageNode(asset: ImageAsset, index: number): CanvasImageNode {
 function createGenerationNode(
   request: ImageGenerationRequest,
   index: number,
+  point: CanvasPoint,
 ): CanvasGenerationNode {
-  const size = generationCanvasSize(request.aspectRatio);
   return {
     id: createId("canvas-generation"),
     type: "generation",
     title: "AI 产品概念图",
     request,
-    status: "running",
+    status: "idle",
     results: [],
-    x: 72 + (index % 3) * 48,
-    y: 72 + (index % 4) * 38,
-    width: size.width,
-    height: size.height,
+    x: point.x,
+    y: point.y,
+    width: 372,
+    height: 506,
     zIndex: index + 1,
     createdAt: Date.now(),
+  };
+}
+
+function normalizeStoredNode(node: CanvasNode): CanvasNode {
+  if (node.type === "image") {
+    return node;
+  }
+  return {
+    ...node,
+    width: 372,
+    height: 506,
+    status: node.status === "running" ? "idle" : node.status,
   };
 }
 
@@ -392,14 +518,11 @@ function createGeneratedAsset(
   };
 }
 
-function generationCanvasSize(aspectRatio: ImageGenerationRequest["aspectRatio"]) {
-  if (aspectRatio === "4:3" || aspectRatio === "16:9") {
-    return { width: 360, height: 240 };
-  }
-  if (aspectRatio === "3:4" || aspectRatio === "9:16") {
-    return { width: 220, height: 300 };
-  }
-  return { width: 280, height: 280 };
+function getViewportCenter(viewport: CanvasViewport): CanvasPoint {
+  return {
+    x: (window.innerWidth / 2 - viewport.x) / viewport.scale,
+    y: ((window.innerHeight - 52) / 2 - viewport.y) / viewport.scale,
+  };
 }
 
 function generationPixelSize(aspectRatio: ImageGenerationRequest["aspectRatio"]) {
@@ -423,5 +546,5 @@ function fitCanvasSize(asset: ImageAsset) {
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
+  return error instanceof Error ? error.message : typeof error === "string" ? error : fallback;
 }
