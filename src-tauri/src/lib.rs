@@ -14,6 +14,7 @@ struct GenerateOpenAiImagesInput {
     model: String,
     prompt: String,
     size: String,
+    quality: String,
     count: u8,
 }
 
@@ -46,16 +47,21 @@ async fn generate_openai_images(
         .timeout(Duration::from_secs(180))
         .build()
         .map_err(|error| format!("无法创建网络客户端：{error}"))?;
+    let mut request_body = json!({
+        "model": model,
+        "prompt": prompt,
+        "n": input.count.clamp(1, 4),
+        "size": input.size,
+        "quality": input.quality
+    });
+    if model.to_ascii_lowercase().starts_with("dall-e") {
+        request_body["response_format"] = Value::String("b64_json".to_string());
+    }
+
     let response = client
         .post(endpoint)
         .bearer_auth(api_key)
-        .json(&json!({
-            "model": model,
-            "prompt": prompt,
-            "n": input.count.clamp(1, 4),
-            "size": input.size,
-            "response_format": "b64_json"
-        }))
+        .json(&request_body)
         .send()
         .await
         .map_err(|error| format!("生图请求失败：{error}"))?;

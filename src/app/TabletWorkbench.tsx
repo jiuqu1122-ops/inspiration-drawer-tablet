@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  CanvasGenerationNode,
   CanvasImageNode,
+  CanvasNode,
   CanvasProject,
   CanvasViewport,
+  GeneratedImageResult,
   ImageAsset,
+  ImageGenerationRequest,
 } from "../../shared";
-import { AssistantPanel, type AssistantTab } from "../components/AssistantPanel";
+import {
+  AssistantPanel,
+  type AssistantTab,
+  type GenerationSettings,
+} from "../components/AssistantPanel";
 import { ResourceRail, type ResourceSection } from "../components/ResourceRail";
 import { TopBar } from "../components/TopBar";
 import {
@@ -13,11 +21,20 @@ import {
   type CanvasAssetView,
 } from "../features/canvas/CanvasStage";
 import { readDeviceImage } from "../features/inspiration/readDeviceImages";
+import { TauriImageGenerationService } from "../services/tauriImageGenerationService";
 import { tabletStorage } from "../storage/indexedDbStorageService";
 import { createId } from "../utils/id";
 
 const DEFAULT_PROJECT_ID = "tablet-local-project";
 const DEFAULT_VIEWPORT: CanvasViewport = { x: 0, y: 0, scale: 1 };
+const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
+  endpoint: "https://api.openai.com/v1",
+  apiKey: "",
+  model: "gpt-image-1",
+  aspectRatio: "1:1",
+  resolution: "1k",
+  count: 1,
+};
 
 interface WorkbenchNotice {
   tone: "neutral" | "success" | "error";
@@ -28,12 +45,14 @@ export function TabletWorkbench() {
   const [resourceSection, setResourceSection] = useState<ResourceSection>("materials");
   const [assistantTab, setAssistantTab] = useState<AssistantTab>("prompt");
   const [prompt, setPrompt] = useState("");
+  const [generationSettings, setGenerationSettings] = useState(DEFAULT_GENERATION_SETTINGS);
   const [assets, setAssets] = useState<CanvasAssetView[]>([]);
-  const [nodes, setNodes] = useState<CanvasImageNode[]>([]);
+  const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [viewport, setViewport] = useState(DEFAULT_VIEWPORT);
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
   const [notice, setNotice] = useState<WorkbenchNotice>();
   const [isImporting, setIsImporting] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hydratedRef = useRef(false);
 
@@ -64,7 +83,7 @@ export function TabletWorkbench() {
             .map((result) => result.value),
         );
         if (project) {
-          setNodes(project.nodes.filter((node): node is CanvasImageNode => node.type === "image"));
+          setNodes(project.nodes);
           setViewport(project.viewport);
         }
         hydratedRef.current = true;
@@ -152,7 +171,11 @@ export function TabletWorkbench() {
   };
 
   const addAssetToCanvas = (assetId: string) => {
-    const existing = nodes.find((node) => node.assetId === assetId);
+    const existing = nodes.find((node) =>
+      node.type === "image"
+        ? node.assetId === assetId
+        : node.results.some((result) => result.id === assetId),
+    );
     if (existing) {
       setSelectedNodeId(existing.id);
       return;
@@ -169,6 +192,80 @@ export function TabletWorkbench() {
   const openGenerationPrompt = () => {
     setAssistantTab("prompt");
     setNotice({ tone: "neutral", message: "描述产品概念后即可创建生成任务" });
+  };
+
+  const generateImage = async () => {
+    const cleanPrompt = prompt.trim();
+    if (!cleanPrompt) {
+      setNotice({ tone: "error", message: "请先输入产品设计描述" });
+      return;
+    }
+    if (!generationSettings.endpoint.trim() || !generationSettings.model.trim() || !generationSettings.apiKey.trim()) {
+      setNotice({ tone: "error", message: "请先完成模型、接口地址和 API Key 配置" });
+      return;
+    }
+
+    const request: ImageGenerationRequest = {
+      id: createId("generation-request"),
+      prompt: cleanPrompt,
+      inputAssetIds: [],
+      model: {
+        provider: "openai-compatible",
+        endpoint: generationSettings.endpoint.trim(),
+        model: generationSettings.model.trim(),
+      },
+      aspectRatio: generationSettings.aspectRatio,
+      resolution: generationSettings.resolution,
+      count: generationSettings.count,
+      createdAt: Date.now(),
+    };
+    const generationNode = createGenerationNode(request, nodes.length);
+    setNodes((current) => [...current, generationNode]);
+    setSelectedNodeId(generationNode.id);
+    setIsGenerating(true);
+    setNotice({ tone: "neutral", message: "正在生成产品概念图" });
+
+    try {
+      const service = new TauriImageGenerationService(generationSettings.apiKey);
+      const results = await service.generate(request, { inputAssets: [] });
+      const savedEntries = await Promise.all(results.map(async (result, index) => {
+        const asset = await tabletStorage.saveGeneratedImage(
+          createGeneratedAsset(result, request, index),
+        );
+        return {
+          asset,
+          displayUri: await tabletStorage.resolveDisplayUri(asset),
+        } satisfies CanvasAssetView;
+      }));
+      const storedResults: GeneratedImageResult[] = savedEntries.map(({ asset }) => ({
+        id: asset.id,
+        requestId: request.id,
+        uri: asset.uri,
+        mimeType: asset.mimeType,
+        width: asset.dimensions?.width,
+        height: asset.dimensions?.height,
+        createdAt: asset.createdAt,
+      }));
+
+      setAssets((current) => [...savedEntries.reverse(), ...current]);
+      setNodes((current) => current.map((node) =>
+        node.id === generationNode.id && node.type === "generation"
+          ? { ...node, status: "success", results: storedResults }
+          : node,
+      ));
+      setResourceSection("materials");
+      setNotice({ tone: "success", message: `已生成 ${storedResults.length} 张图片并保存到沙盒` });
+    } catch (error) {
+      const message = getErrorMessage(error, "图片生成失败");
+      setNodes((current) => current.map((node) =>
+        node.id === generationNode.id && node.type === "generation"
+          ? { ...node, status: "error", error: message }
+          : node,
+      ));
+      setNotice({ tone: "error", message });
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   return (
@@ -223,6 +320,10 @@ export function TabletWorkbench() {
           onTabChange={setAssistantTab}
           prompt={prompt}
           onPromptChange={setPrompt}
+          settings={generationSettings}
+          onSettingsChange={setGenerationSettings}
+          isGenerating={isGenerating}
+          onGenerate={() => void generateImage()}
         />
       </div>
 
@@ -249,6 +350,66 @@ function createImageNode(asset: ImageAsset, index: number): CanvasImageNode {
     zIndex: index + 1,
     createdAt: Date.now() + index,
   };
+}
+
+function createGenerationNode(
+  request: ImageGenerationRequest,
+  index: number,
+): CanvasGenerationNode {
+  const size = generationCanvasSize(request.aspectRatio);
+  return {
+    id: createId("canvas-generation"),
+    type: "generation",
+    title: "AI 产品概念图",
+    request,
+    status: "running",
+    results: [],
+    x: 72 + (index % 3) * 48,
+    y: 72 + (index % 4) * 38,
+    width: size.width,
+    height: size.height,
+    zIndex: index + 1,
+    createdAt: Date.now(),
+  };
+}
+
+function createGeneratedAsset(
+  result: GeneratedImageResult,
+  request: ImageGenerationRequest,
+  index: number,
+): ImageAsset {
+  const dimensions = generationPixelSize(request.aspectRatio);
+  return {
+    id: result.id,
+    kind: "image",
+    name: `AI 产品概念图 ${index + 1}.png`,
+    mimeType: result.mimeType,
+    storageKind: "memory",
+    uri: result.uri,
+    dimensions,
+    createdAt: result.createdAt,
+    source: "generated",
+  };
+}
+
+function generationCanvasSize(aspectRatio: ImageGenerationRequest["aspectRatio"]) {
+  if (aspectRatio === "4:3" || aspectRatio === "16:9") {
+    return { width: 360, height: 240 };
+  }
+  if (aspectRatio === "3:4" || aspectRatio === "9:16") {
+    return { width: 220, height: 300 };
+  }
+  return { width: 280, height: 280 };
+}
+
+function generationPixelSize(aspectRatio: ImageGenerationRequest["aspectRatio"]) {
+  if (aspectRatio === "4:3" || aspectRatio === "16:9") {
+    return { width: 1536, height: 1024 };
+  }
+  if (aspectRatio === "3:4" || aspectRatio === "9:16") {
+    return { width: 1024, height: 1536 };
+  }
+  return { width: 1024, height: 1024 };
 }
 
 function fitCanvasSize(asset: ImageAsset) {

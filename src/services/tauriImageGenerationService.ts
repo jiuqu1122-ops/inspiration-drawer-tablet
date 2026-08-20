@@ -35,8 +35,12 @@ export class TauriImageGenerationService implements ImageGenerationService {
         endpoint: request.model.endpoint,
         apiKey: this.apiKey.trim(),
         model: request.model.model,
-        prompt: buildIndustrialDesignPrompt(request.prompt),
+        prompt: buildIndustrialDesignPrompt([
+          request.prompt,
+          `Target aspect ratio: ${request.aspectRatio}. Detail tier: ${request.resolution}.`,
+        ].join("\n")),
         size: getOpenAiSize(request.aspectRatio),
+        quality: getOpenAiQuality(request.resolution),
         count: request.count,
       },
     });
@@ -49,6 +53,16 @@ export class TauriImageGenerationService implements ImageGenerationService {
       createdAt: Date.now(),
     }));
   }
+}
+
+function getOpenAiQuality(resolution: ImageGenerationRequest["resolution"]): string {
+  if (resolution === "4k") {
+    return "high";
+  }
+  if (resolution === "2k") {
+    return "medium";
+  }
+  return "low";
 }
 
 function getOpenAiSize(aspectRatio: ImageGenerationRequest["aspectRatio"]): string {

@@ -31,7 +31,8 @@ body,
 }
 
 button,
-textarea {
+textarea,
+input {
   font: inherit;
 }
 
@@ -55,7 +56,8 @@ button:disabled {
 }
 
 button:focus-visible,
-textarea:focus-visible {
+textarea:focus-visible,
+input:focus-visible {
   outline: 3px solid rgba(8, 127, 104, 0.25);
   outline-offset: 2px;
 }
@@ -629,6 +631,7 @@ textarea:focus-visible {
 }
 
 .assistant-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   padding: 18px;
@@ -639,8 +642,14 @@ textarea:focus-visible {
 }
 
 .model-state {
+  min-height: 36px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 10px;
   gap: 6px;
   color: var(--muted);
+  background: transparent;
+  cursor: pointer;
   font-size: 10px;
 }
 
@@ -649,6 +658,95 @@ textarea:focus-visible {
   height: 7px;
   border-radius: 50%;
   background: #b8bdb9;
+}
+
+.model-state.is-ready {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.model-state.is-ready i {
+  background: var(--accent);
+}
+
+.model-state svg {
+  width: 15px;
+  height: 15px;
+}
+
+.model-config {
+  position: absolute;
+  z-index: 20;
+  top: 64px;
+  right: 12px;
+  left: 12px;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 44px rgba(32, 37, 34, 0.18);
+  backdrop-filter: blur(14px);
+}
+
+.model-config-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.model-config-heading div {
+  display: grid;
+  gap: 2px;
+}
+
+.model-config-heading strong {
+  font-size: 12px;
+}
+
+.model-config-heading span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.model-config-heading button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  place-items: center;
+  color: white;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.model-config label {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.model-config input {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  outline: 0;
+  color: var(--ink);
+  background: #f8faf8;
+  font-size: 11px;
+}
+
+.model-config input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(8, 127, 104, 0.1);
 }
 
 .assistant-tabs {
@@ -733,6 +831,83 @@ textarea:focus-visible {
   line-height: 1.55;
 }
 
+.generation-options {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.option-group {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+}
+
+.option-group > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.option-group > div {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.option-group:last-child > div {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.option-group button {
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+  background: white;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.option-group button.is-active {
+  border-color: #acd0c4;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-weight: 700;
+}
+
+.assistant-mode-empty {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  text-align: center;
+}
+
+.assistant-mode-empty > svg {
+  width: 34px;
+  height: 34px;
+  margin-bottom: 12px;
+  color: var(--accent);
+}
+
+.assistant-mode-empty strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.assistant-mode-empty p {
+  max-width: 250px;
+  margin: 7px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 .prompt-composer {
   display: flex;
   min-height: 190px;
@@ -792,6 +967,90 @@ textarea:focus-visible {
 .send-action svg {
   width: 18px;
   height: 18px;
+}
+
+.spin {
+  animation: rotate 0.8s linear infinite;
+}
+
+@keyframes rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.generation-node-state {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  padding: 30px;
+  border-radius: 9px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: #edf2ef;
+  text-align: center;
+}
+
+.canvas-node.is-error .generation-node-state {
+  color: #8d3b34;
+  background: #faece9;
+}
+
+.generation-spinner {
+  width: 28px;
+  height: 28px;
+  margin-bottom: 12px;
+  border: 3px solid #c7dcd5;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: rotate 0.9s linear infinite;
+}
+
+.generation-error-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  margin-bottom: 12px;
+  border-radius: 50%;
+  place-items: center;
+  color: white;
+  background: #a7473f;
+  font-weight: 800;
+}
+
+.generation-node-state strong {
+  color: inherit;
+  font-size: 13px;
+}
+
+.generation-node-state p {
+  display: -webkit-box;
+  max-width: 260px;
+  margin: 7px 0 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.node-result-count {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 7px;
+  border-radius: 9px;
+  place-items: center;
+  color: white;
+  background: rgba(8, 127, 104, 0.88);
+  font-size: 10px;
+  font-weight: 800;
+  pointer-events: none;
 }
 
 .workbench-notice {
@@ -916,6 +1175,10 @@ textarea:focus-visible {
     box-shadow: 0 -16px 44px rgba(32, 37, 34, 0.14);
   }
 
+  .model-config {
+    top: 58px;
+  }
+
   .sheet-handle {
     display: block;
     width: 38px;
@@ -925,19 +1188,41 @@ textarea:focus-visible {
     background: #cbd0cc;
   }
 
-  .assistant-heading,
   .assistant-intro {
     display: none;
   }
 
+  .assistant-heading .eyebrow {
+    display: none;
+  }
+
+  .assistant-heading h2 {
+    margin: 0;
+    font-size: 14px;
+  }
+
   .assistant-tabs {
-    margin-top: 0;
+    margin-top: 7px;
   }
 
   .prompt-composer {
     min-height: 0;
     margin-top: 10px;
     flex: 1;
+  }
+
+  .generation-options {
+    grid-template-columns: 1.35fr 1fr;
+    gap: 7px;
+    margin-top: 9px;
+  }
+
+  .option-group {
+    display: block;
+  }
+
+  .option-group > span {
+    display: none;
   }
 
   .prompt-composer textarea {

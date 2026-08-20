@@ -12,7 +12,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type {
-  CanvasImageNode,
+  CanvasNode,
   CanvasPoint,
   CanvasViewport,
   ImageAsset,
@@ -24,7 +24,7 @@ export interface CanvasAssetView {
 }
 
 interface CanvasStageProps {
-  nodes: CanvasImageNode[];
+  nodes: CanvasNode[];
   assets: CanvasAssetView[];
   viewport: CanvasViewport;
   selectedNodeId?: string;
@@ -297,10 +297,14 @@ export function CanvasStage({
       <div className="canvas-grid" aria-hidden="true" />
       <div ref={viewportLayerRef} className="canvas-viewport">
         {nodes.map((node) => {
-          const assetView = assetsById.get(node.assetId);
-          if (!assetView) {
+          const assetView = node.type === "image"
+            ? assetsById.get(node.assetId)
+            : assetsById.get(node.results[0]?.id);
+          if (node.type === "image" && !assetView) {
             return null;
           }
+
+          const stateClass = node.type === "generation" ? ` is-${node.status}` : "";
 
           return (
             <div
@@ -312,7 +316,7 @@ export function CanvasStage({
                   nodeElementsRef.current.delete(node.id);
                 }
               }}
-              className={selectedNodeId === node.id ? "canvas-node is-selected" : "canvas-node"}
+              className={`${selectedNodeId === node.id ? "canvas-node is-selected" : "canvas-node"}${stateClass}`}
               data-canvas-node-id={node.id}
               style={{
                 width: node.width,
@@ -321,8 +325,19 @@ export function CanvasStage({
                 zIndex: node.zIndex,
               }}
             >
-              <img src={assetView.displayUri} alt={node.title} draggable={false} />
+              {assetView ? (
+                <img src={assetView.displayUri} alt={node.title} draggable={false} />
+              ) : node.type === "generation" ? (
+                <div className="generation-node-state">
+                  {node.status === "running" ? <span className="generation-spinner" /> : <MagicPromptIcon />}
+                  <strong>{node.status === "error" ? "生成失败" : "正在生成概念图"}</strong>
+                  <p>{node.status === "error" ? node.error : node.request.prompt}</p>
+                </div>
+              ) : null}
               <span className="node-title">{node.title}</span>
+              {node.type === "generation" && node.status === "success" && node.results.length > 1 && (
+                <span className="node-result-count">+{node.results.length - 1}</span>
+              )}
               <span className="node-more" aria-hidden="true"><DotsThree weight="bold" /></span>
             </div>
           );
@@ -382,4 +397,8 @@ function getMidpoint(first: CanvasPoint, second: CanvasPoint): CanvasPoint {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
+}
+
+function MagicPromptIcon() {
+  return <span className="generation-error-icon" aria-hidden="true">!</span>;
 }
