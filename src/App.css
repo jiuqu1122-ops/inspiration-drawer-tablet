@@ -20,6 +20,22 @@
   --app-top: calc(var(--topbar-height) + var(--safe-top));
 }
 
+:root[data-theme="dark"] {
+  color: #ebe8e2;
+  background: #121312;
+  --ink: #ebe8e2;
+  --muted: #aaa69f;
+  --muted-light: #7e7a74;
+  --line: #363735;
+  --line-strong: #4a4b48;
+  --panel: #20211f;
+  --canvas: #151614;
+  --accent: #33b5ea;
+  --accent-strong: #6cccf2;
+  --accent-soft: #173744;
+  --danger: #ef8a7e;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -179,6 +195,38 @@ select:focus-visible {
 .top-actions {
   justify-content: flex-end;
   gap: 6px;
+}
+
+.theme-toggle {
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.account-chip {
+  display: inline-flex;
+  min-width: 62px;
+  min-height: 40px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: var(--muted);
+  background: var(--panel);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.account-chip.is-authenticated {
+  color: var(--accent-strong);
+  border-color: rgba(22, 159, 221, 0.3);
+  background: var(--accent-soft);
+}
+
+.account-chip svg {
+  width: 17px;
+  height: 17px;
 }
 
 .history-actions {
@@ -1692,6 +1740,391 @@ select:focus-visible {
 .workbench-notice.is-error {
   color: var(--danger);
   border-color: #e3bcb7;
+}
+
+.modal-backdrop {
+  position: fixed;
+  z-index: 200;
+  inset: 0;
+  display: grid;
+  padding: calc(var(--safe-top) + 24px) 24px 24px;
+  place-items: center;
+  background: rgba(17, 16, 14, 0.46);
+  backdrop-filter: blur(8px);
+}
+
+.account-dialog {
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(680px, calc(100dvh - var(--safe-top) - 36px));
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  color: var(--ink);
+  background: var(--panel);
+  box-shadow: 0 28px 80px rgba(21, 19, 16, 0.24);
+}
+
+.account-dialog-header {
+  display: flex;
+  min-height: 76px;
+  padding: 14px 15px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+  gap: 10px;
+}
+
+.account-dialog-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 11px;
+  place-items: center;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.account-dialog-icon svg {
+  width: 23px;
+  height: 23px;
+}
+
+.account-dialog-header > span:nth-child(2) {
+  display: grid;
+  gap: 3px;
+}
+
+.account-dialog-header small {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.account-dialog-header strong {
+  font-size: 14px;
+}
+
+.dialog-close-action {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  place-items: center;
+  color: var(--muted);
+  background: transparent;
+}
+
+.dialog-close-action svg {
+  width: 19px;
+  height: 19px;
+}
+
+.account-form,
+.account-session-view {
+  display: grid;
+  padding: 20px;
+  gap: 15px;
+}
+
+.account-intro,
+.verification-copy,
+.account-expiry {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.65;
+}
+
+.account-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.account-form label > span small {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.account-form input,
+.account-input-shell {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--canvas);
+}
+
+.account-form input {
+  padding: 0 12px;
+  outline: 0;
+}
+
+.account-input-shell {
+  display: flex;
+  padding-left: 12px;
+  align-items: center;
+  gap: 7px;
+}
+
+.account-input-shell svg {
+  width: 18px;
+  height: 18px;
+  color: var(--muted);
+}
+
+.account-input-shell input {
+  min-width: 0;
+  padding-left: 0;
+  border: 0;
+  background: transparent;
+}
+
+.account-form .verification-code-input {
+  font-size: 19px;
+  font-weight: 750;
+  letter-spacing: 0.32em;
+  text-align: center;
+}
+
+.verification-copy {
+  display: grid;
+  padding: 13px;
+  border: 1px solid rgba(22, 159, 221, 0.25);
+  border-radius: 11px;
+  gap: 4px;
+  background: var(--accent-soft);
+}
+
+.verification-copy strong {
+  color: var(--accent-strong);
+  font-size: 11px;
+}
+
+.account-submit-action,
+.account-logout-action {
+  display: inline-flex;
+  min-height: 46px;
+  padding: 0 15px;
+  border: 1px solid #2f2d29;
+  border-radius: 10px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: white;
+  background: #2f2d29;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.account-logout-action {
+  color: var(--danger);
+  border-color: rgba(161, 66, 56, 0.28);
+  background: transparent;
+}
+
+.account-logout-action svg {
+  width: 17px;
+  height: 17px;
+}
+
+.account-back-action {
+  display: inline-flex;
+  width: max-content;
+  min-height: 34px;
+  padding: 0 7px;
+  border: 0;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 9px;
+}
+
+.account-back-action svg {
+  width: 14px;
+  height: 14px;
+}
+
+.account-security-note {
+  color: var(--muted-light);
+  font-size: 8px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.dialog-error {
+  margin: 0;
+  padding: 10px 11px;
+  border: 1px solid rgba(161, 66, 56, 0.25);
+  border-radius: 9px;
+  color: var(--danger);
+  background: rgba(161, 66, 56, 0.08);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.account-identity {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.account-identity > svg {
+  width: 26px;
+  height: 26px;
+  color: #4d9a70;
+}
+
+.account-identity > span {
+  display: grid;
+  gap: 3px;
+}
+
+.account-identity strong {
+  font-size: 12px;
+}
+
+.account-identity small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.credit-balance {
+  display: grid;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--canvas);
+}
+
+.credit-balance small,
+.credit-balance span {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.credit-balance strong {
+  margin: 8px 0 2px;
+  font-size: 28px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+}
+
+:root[data-theme="dark"] .top-bar,
+:root[data-theme="dark"] .resource-nav,
+:root[data-theme="dark"] .canvas-tool-dock,
+:root[data-theme="dark"] .canvas-context-menu,
+:root[data-theme="dark"] .workbench-notice {
+  background: rgba(31, 32, 30, 0.94);
+}
+
+:root[data-theme="dark"] .resource-drawer,
+:root[data-theme="dark"] .generation-node,
+:root[data-theme="dark"] .rule-node {
+  background: rgba(32, 33, 31, 0.98);
+}
+
+:root[data-theme="dark"] .tablet-badge,
+:root[data-theme="dark"] .project-switcher:hover,
+:root[data-theme="dark"] .drawer-close,
+:root[data-theme="dark"] .material-import-action,
+:root[data-theme="dark"] .project-create-action,
+:root[data-theme="dark"] .material-search,
+:root[data-theme="dark"] .asset-tile,
+:root[data-theme="dark"] .resource-placeholder,
+:root[data-theme="dark"] .compact-empty,
+:root[data-theme="dark"] .project-row,
+:root[data-theme="dark"] .project-thumbnail,
+:root[data-theme="dark"] .canvas-tool-dock button:hover,
+:root[data-theme="dark"] .canvas-empty-icon,
+:root[data-theme="dark"] .node-status,
+:root[data-theme="dark"] .model-select-field select,
+:root[data-theme="dark"] .node-prompt-field,
+:root[data-theme="dark"] .rule-preset-field select,
+:root[data-theme="dark"] .rule-toggle,
+:root[data-theme="dark"] .generation-node-footer select {
+  color: var(--ink);
+  background: #272825;
+}
+
+:root[data-theme="dark"] .resource-nav-item.is-active,
+:root[data-theme="dark"] .project-row.is-current {
+  color: var(--ink);
+  background: #30322f;
+}
+
+:root[data-theme="dark"] .canvas-grid {
+  background-image: radial-gradient(circle, rgba(190, 193, 186, 0.18) 1px, transparent 1.1px);
+}
+
+:root[data-theme="dark"] .generation-preview {
+  background-color: #252624;
+  background-image: radial-gradient(circle, rgba(190, 193, 186, 0.15) 0.8px, transparent 0.9px);
+}
+
+:root[data-theme="dark"] .generation-preview-state.is-error,
+:root[data-theme="dark"] .node-status.is-error {
+  color: #f3a097;
+  background: rgba(104, 43, 37, 0.34);
+}
+
+:root[data-theme="dark"] .node-status.is-running,
+:root[data-theme="dark"] .prompt-optimize-action,
+:root[data-theme="dark"] .connection-hint {
+  color: #73d2f4;
+  border-color: #28586b;
+  background: #183744;
+}
+
+:root[data-theme="dark"] .node-status.is-success {
+  color: #85d0a6;
+  background: #213d2d;
+}
+
+:root[data-theme="dark"] .connection-point,
+:root[data-theme="dark"] .node-port span,
+:root[data-theme="dark"] .rule-toggle i {
+  fill: #20211f;
+  background: #20211f;
+}
+
+:root[data-theme="dark"] .node-connection-halo {
+  stroke: rgba(17, 18, 16, 0.96);
+}
+
+:root[data-theme="dark"] .secondary-action {
+  color: var(--ink);
+  background: var(--panel);
+}
+
+:root[data-theme="dark"] .brand-mark,
+:root[data-theme="dark"] .primary-action,
+:root[data-theme="dark"] .node-run-action,
+:root[data-theme="dark"] .account-submit-action {
+  border-color: #e8e5df;
+  color: #181916;
+  background: #e8e5df;
+}
+
+:root[data-theme="dark"] .gesture-hint {
+  color: var(--muted);
+  background: rgba(31, 32, 30, 0.82);
+}
+
+:root[data-theme="dark"] .connected-rule-chip,
+:root[data-theme="dark"] .rule-node-icon,
+:root[data-theme="dark"] .rule-toggle.is-enabled {
+  color: #e6c16f;
+  border-color: #705d31;
+  background: #382f1c;
 }
 
 @media (max-width: 1080px) and (orientation: landscape) {

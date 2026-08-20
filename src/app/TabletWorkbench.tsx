@@ -21,6 +21,7 @@ import {
   normalizeImageAspectRatio,
 } from "../../shared";
 import { CanvasToolDock } from "../components/CanvasToolDock";
+import { AccountDialog } from "../components/AccountDialog";
 import { ResourceRail, type ResourceSection } from "../components/ResourceRail";
 import { TopBar } from "../components/TopBar";
 import {
@@ -30,6 +31,10 @@ import {
 } from "../features/canvas/CanvasStage";
 import { readDeviceImage } from "../features/inspiration/readDeviceImages";
 import { TauriImageGenerationService } from "../services/tauriImageGenerationService";
+import {
+  getServerSession,
+  type ServerSession,
+} from "../services/tauriServerSessionService";
 import { tabletStorage } from "../storage/indexedDbStorageService";
 import { createId } from "../utils/id";
 
@@ -40,6 +45,9 @@ const MANAGED_IMAGE_MODEL = {
   provider: "server-gateway" as const,
   model: "nano-banana-pro",
 };
+const THEME_STORAGE_KEY = "inspiration-drawer-tablet-theme";
+
+type ThemeMode = "system" | "light" | "dark";
 
 interface WorkbenchNotice {
   tone: "neutral" | "success" | "error";
@@ -57,6 +65,10 @@ export function TabletWorkbench() {
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
   const [notice, setNotice] = useState<WorkbenchNotice>();
   const [isImporting, setIsImporting] = useState(false);
+  const [isAccountDialogOpen, setIsAccountDialogOpen] = useState(false);
+  const [serverSession, setServerSession] = useState<ServerSession>({ authenticated: false });
+  const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
+  const [systemDarkMode, setSystemDarkMode] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const [optimizingNodeIds, setOptimizingNodeIds] = useState<Set<string>>(() => new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hydratedRef = useRef(false);
@@ -70,6 +82,33 @@ export function TabletWorkbench() {
   useEffect(() => {
     projectsRef.current = projects;
   }, [projects]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleChange = (event: MediaQueryListEvent) => setSystemDarkMode(event.matches);
+    setSystemDarkMode(media.matches);
+    media.addEventListener("change", handleChange);
+    return () => media.removeEventListener("change", handleChange);
+  }, []);
+
+  const isDarkMode = themeMode === "dark" || (themeMode === "system" && systemDarkMode);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = isDarkMode ? "dark" : "light";
+    document.documentElement.style.colorScheme = isDarkMode ? "dark" : "light";
+  }, [isDarkMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getServerSession()
+      .then((session) => {
+        if (!cancelled) setServerSession(session);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -374,6 +413,11 @@ export function TabletWorkbench() {
       setNotice({ tone: "error", message: "请先输入需要优化的提示词" });
       return;
     }
+    if (!serverSession.authenticated) {
+      setIsAccountDialogOpen(true);
+      setNotice({ tone: "neutral", message: "请先登录已绑定额度的邮箱，再优化提示词" });
+      return;
+    }
     setOptimizingNodeIds((current) => new Set(current).add(nodeId));
     setNotice({ tone: "neutral", message: "正在按工业设计任务优化提示词" });
     try {
@@ -413,6 +457,11 @@ export function TabletWorkbench() {
     const cleanPrompt = sourceNode.request.prompt.trim();
     if (!cleanPrompt) {
       setNotice({ tone: "error", message: "请先在生图节点中描述产品设计任务" });
+      return;
+    }
+    if (!serverSession.authenticated) {
+      setIsAccountDialogOpen(true);
+      setNotice({ tone: "neutral", message: "请先登录已绑定额度的邮箱，再运行生图节点" });
       return;
     }
 
@@ -465,6 +514,7 @@ export function TabletWorkbench() {
           : node,
       ));
       setNotice({ tone: "success", message: `已生成 ${storedResults.length} 张图片并保存到素材库` });
+      void getServerSession().then(setServerSession).catch(() => undefined);
     } catch (error) {
       const message = getErrorMessage(error, "图片生成失败");
       setNodes((current) => current.map((node) =>
@@ -596,8 +646,16 @@ export function TabletWorkbench() {
         projectName={activeProject?.name ?? DEFAULT_PROJECT_NAME}
         zoom={Math.round(viewport.scale * 100)}
         isImporting={isImporting}
+        isDarkMode={isDarkMode}
+        session={serverSession}
         onImport={requestImageImport}
         onAddGeneration={addGenerationNode}
+        onThemeToggle={() => {
+          const nextMode: ThemeMode = isDarkMode ? "light" : "dark";
+          window.localStorage.setItem(THEME_STORAGE_KEY, nextMode);
+          setThemeMode(nextMode);
+        }}
+        onAccountOpen={() => setIsAccountDialogOpen(true)}
         onProjectsOpen={() => {
           setResourceSection("projects");
           setIsResourceDrawerOpen(true);
@@ -669,8 +727,19 @@ export function TabletWorkbench() {
           {notice.message}
         </div>
       )}
+      <AccountDialog
+        open={isAccountDialogOpen}
+        session={serverSession}
+        onClose={() => setIsAccountDialogOpen(false)}
+        onSessionChange={setServerSession}
+      />
     </main>
   );
+}
+
+function readThemeMode(): ThemeMode {
+  const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+  return saved === "light" || saved === "dark" ? saved : "system";
 }
 
 function createImageNode(asset: ImageAsset, index: number, point: CanvasPoint): CanvasImageNode {
