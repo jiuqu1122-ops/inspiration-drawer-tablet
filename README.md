@@ -23,19 +23,23 @@ npm run tauri dev
 
 浏览器预览可以测试 UI、导入和画布手势；真实生图请求需要在 Tauri 运行环境中执行。
 
-## Android 初始化
+## Android 开发
 
-先安装 Android Studio，并在 SDK Manager 中安装 Android SDK Platform、Platform Tools、Build Tools、Command-line Tools 和 NDK。使用 Android Studio 自带的 JDK。
+开发工具统一安装在 E 盘：Android Studio 位于 `E:\Android\Android Studio`，SDK 位于 `E:\Android\Sdk`，Gradle 及其构建缓存位于 `E:\Android\Gradle`。当前已安装 Android 36、Build Tools 36.1.0、Platform Tools 37.0.1、NDK 29.0.14206865 和 Gradle 8.14.3。
 
 ```powershell
-$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
-$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
-$env:NDK_HOME = "$env:ANDROID_HOME\ndk\<installed-version>"
+$env:JAVA_HOME = "E:\Android\Android Studio\jbr"
+$env:ANDROID_HOME = "E:\Android\Sdk"
+$env:ANDROID_SDK_ROOT = "E:\Android\Sdk"
+$env:NDK_HOME = "E:\Android\Sdk\ndk\29.0.14206865"
+$env:GRADLE_HOME = "E:\Android\Gradle\gradle-8.14.3"
+$env:GRADLE_USER_HOME = "E:\Android\Gradle\user-home"
 
 rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
-npm run tauri android init
 npm run tauri android dev
-npm run tauri android build
+npm run tauri android build -- --apk
 ```
 
-本项目当前使用 Tauri 2；第一次执行 `android init` 后，Android 原生工程会生成在 `src-tauri/gen/android`。
+本项目当前使用 Tauri 2，Android 原生工程已生成在 `src-tauri/gen/android`。上述环境变量也已写入当前 Windows 用户环境；新开的终端会自动读取。
+
+Windows 上运行标准 Tauri Android 构建前，需要在“设置 → 系统 → 高级 → 开发者选项”中开启开发者模式，以允许 Tauri 创建原生库符号链接。
