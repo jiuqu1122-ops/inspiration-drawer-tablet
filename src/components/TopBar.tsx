@@ -7,17 +7,21 @@ import {
 } from "@phosphor-icons/react";
 
 interface TopBarProps {
+  projectName: string;
   zoom: number;
   isImporting: boolean;
   onImport: () => void;
   onAddGeneration: () => void;
+  onProjectsOpen: () => void;
 }
 
 export function TopBar({
+  projectName,
   zoom,
   isImporting,
   onImport,
   onAddGeneration,
+  onProjectsOpen,
 }: TopBarProps) {
   return (
     <header className="top-bar">
@@ -29,8 +33,8 @@ export function TopBar({
         <span className="tablet-badge">TABLET</span>
       </div>
 
-      <button className="project-switcher" type="button">
-        <strong>未命名工业设计项目</strong>
+      <button className="project-switcher" type="button" onClick={onProjectsOpen}>
+        <strong>{projectName}</strong>
         <span>无限画布</span>
       </button>
 

@@ -34,6 +34,7 @@ import { tabletStorage } from "../storage/indexedDbStorageService";
 import { createId } from "../utils/id";
 
 const DEFAULT_PROJECT_ID = "tablet-local-project";
+const DEFAULT_PROJECT_NAME = "未命名工业设计项目";
 const DEFAULT_VIEWPORT: CanvasViewport = { x: 0, y: 0, scale: 1 };
 const MANAGED_IMAGE_MODEL = {
   provider: "server-gateway" as const,
@@ -49,6 +50,8 @@ export function TabletWorkbench() {
   const [resourceSection, setResourceSection] = useState<ResourceSection>("materials");
   const [isResourceDrawerOpen, setIsResourceDrawerOpen] = useState(false);
   const [assets, setAssets] = useState<CanvasAssetView[]>([]);
+  const [projects, setProjects] = useState<CanvasProject[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState(DEFAULT_PROJECT_ID);
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [viewport, setViewport] = useState(DEFAULT_VIEWPORT);
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
@@ -58,10 +61,15 @@ export function TabletWorkbench() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hydratedRef = useRef(false);
   const nodesRef = useRef<CanvasNode[]>([]);
+  const projectsRef = useRef<CanvasProject[]>([]);
 
   useEffect(() => {
     nodesRef.current = nodes;
   }, [nodes]);
+
+  useEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,16 +91,20 @@ export function TabletWorkbench() {
           return;
         }
 
-        const project = projects.find((candidate) => candidate.id === DEFAULT_PROJECT_ID);
+        const project = projects.find((candidate) => candidate.id === DEFAULT_PROJECT_ID) ?? projects[0];
+        const initialProject = project ?? createBlankProject(DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME);
+        if (!project) {
+          await tabletStorage.saveProject(initialProject);
+        }
         setAssets(
           assetResults
             .filter((result): result is PromiseFulfilledResult<CanvasAssetView> => result.status === "fulfilled")
             .map((result) => result.value),
         );
-        if (project) {
-          setNodes(project.nodes.map(normalizeStoredNode));
-          setViewport(project.viewport);
-        }
+        setProjects(project ? projects : [initialProject]);
+        setActiveProjectId(initialProject.id);
+        setNodes(initialProject.nodes.map(normalizeStoredNode));
+        setViewport(initialProject.viewport);
         hydratedRef.current = true;
       } catch (error) {
         setNotice({ tone: "error", message: getErrorMessage(error, "无法读取本地项目") });
@@ -113,21 +125,24 @@ export function TabletWorkbench() {
 
     const timer = window.setTimeout(() => {
       const now = Date.now();
+      const existing = projectsRef.current.find((project) => project.id === activeProjectId);
       const project: CanvasProject = {
-        id: DEFAULT_PROJECT_ID,
-        name: "未命名工业设计项目",
+        id: activeProjectId,
+        name: existing?.name ?? DEFAULT_PROJECT_NAME,
         nodes,
         viewport,
-        createdAt: now,
+        createdAt: existing?.createdAt ?? now,
         updatedAt: now,
       };
-      void tabletStorage.saveProject(project).catch((error) => {
-        setNotice({ tone: "error", message: getErrorMessage(error, "画布保存失败") });
-      });
+      void tabletStorage.saveProject(project)
+        .then(() => setProjects((current) => upsertProject(current, project)))
+        .catch((error) => {
+          setNotice({ tone: "error", message: getErrorMessage(error, "画布保存失败") });
+        });
     }, 220);
 
     return () => window.clearTimeout(timer);
-  }, [nodes, viewport]);
+  }, [activeProjectId, nodes, viewport]);
 
   useEffect(() => {
     if (!notice) {
@@ -209,6 +224,91 @@ export function TabletWorkbench() {
     setNodes((current) => [...current, node]);
     setSelectedNodeId(node.id);
     setIsResourceDrawerOpen(false);
+  };
+
+  const removeDeviceAsset = async (assetId: string) => {
+    const entry = assets.find((candidate) => candidate.asset.id === assetId);
+    if (!entry || entry.asset.source !== "device") {
+      return;
+    }
+    if (!window.confirm(`确定移除设备素材“${entry.asset.name}”吗？所有项目中的对应画布节点和连线也会移除。`)) {
+      return;
+    }
+    try {
+      const currentNodes = removeAssetReferences(nodesRef.current, assetId);
+      const nextProjects = projectsRef.current.map((project) => ({
+        ...project,
+        nodes: project.id === activeProjectId
+          ? currentNodes
+          : removeAssetReferences(project.nodes, assetId),
+        updatedAt: Date.now(),
+      }));
+      await tabletStorage.removeImageAsset(assetId);
+      await Promise.all(nextProjects.map((project) => tabletStorage.saveProject(project)));
+      setAssets((current) => current.filter((candidate) => candidate.asset.id !== assetId));
+      setNodes(currentNodes);
+      setProjects(nextProjects);
+      setSelectedNodeId((current) => current && currentNodes.some((node) => node.id === current) ? current : undefined);
+      setNotice({ tone: "success", message: "设备素材及其画布引用已移除" });
+    } catch (error) {
+      setNotice({ tone: "error", message: getErrorMessage(error, "移除设备素材失败") });
+    }
+  };
+
+  const saveActiveProject = async () => {
+    const existing = projectsRef.current.find((project) => project.id === activeProjectId);
+    const now = Date.now();
+    const snapshot: CanvasProject = {
+      id: activeProjectId,
+      name: existing?.name ?? DEFAULT_PROJECT_NAME,
+      nodes: nodesRef.current,
+      viewport,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    await tabletStorage.saveProject(snapshot);
+    setProjects((current) => upsertProject(current, snapshot));
+    return snapshot;
+  };
+
+  const createProject = async () => {
+    try {
+      await saveActiveProject();
+      const nextNumber = projectsRef.current.length + 1;
+      const project = createBlankProject(
+        createId("tablet-project"),
+        nextNumber === 1 ? DEFAULT_PROJECT_NAME : `未命名工业设计项目 ${nextNumber}`,
+      );
+      await tabletStorage.saveProject(project);
+      setProjects((current) => [...current, project]);
+      setActiveProjectId(project.id);
+      setNodes([]);
+      setViewport(DEFAULT_VIEWPORT);
+      setSelectedNodeId(undefined);
+      setNotice({ tone: "success", message: `已创建“${project.name}”` });
+    } catch (error) {
+      setNotice({ tone: "error", message: getErrorMessage(error, "新建项目失败") });
+    }
+  };
+
+  const selectProject = async (projectId: string) => {
+    if (projectId === activeProjectId) {
+      return;
+    }
+    const target = projectsRef.current.find((project) => project.id === projectId);
+    if (!target) {
+      return;
+    }
+    try {
+      await saveActiveProject();
+      setActiveProjectId(target.id);
+      setNodes(target.nodes.map(normalizeStoredNode));
+      setViewport(target.viewport);
+      setSelectedNodeId(undefined);
+      setIsResourceDrawerOpen(false);
+    } catch (error) {
+      setNotice({ tone: "error", message: getErrorMessage(error, "切换项目失败") });
+    }
   };
 
   const addGenerationNode = () => {
@@ -488,14 +588,20 @@ export function TabletWorkbench() {
   };
 
   const canRunGeneration = nodes.some((node) => node.type === "generation" && node.status !== "running");
+  const activeProject = projects.find((project) => project.id === activeProjectId);
 
   return (
     <main className="tablet-app">
       <TopBar
+        projectName={activeProject?.name ?? DEFAULT_PROJECT_NAME}
         zoom={Math.round(viewport.scale * 100)}
         isImporting={isImporting}
         onImport={requestImageImport}
         onAddGeneration={addGenerationNode}
+        onProjectsOpen={() => {
+          setResourceSection("projects");
+          setIsResourceDrawerOpen(true);
+        }}
       />
       <input
         ref={fileInputRef}
@@ -511,7 +617,7 @@ export function TabletWorkbench() {
           nodes={nodes}
           assets={assets}
           viewport={viewport}
-        selectedNodeId={selectedNodeId}
+          selectedNodeId={selectedNodeId}
           optimizingNodeIds={optimizingNodeIds}
           onImportRequest={requestImageImport}
           onGenerateRequest={addGenerationNode}
@@ -537,7 +643,12 @@ export function TabletWorkbench() {
         active={resourceSection}
         isOpen={isResourceDrawerOpen}
         assets={assets}
+        projects={projects}
+        activeProjectId={activeProjectId}
         onAssetSelect={addAssetToCanvas}
+        onAssetRemove={(assetId) => void removeDeviceAsset(assetId)}
+        onProjectCreate={() => void createProject()}
+        onProjectSelect={(projectId) => void selectProject(projectId)}
         onChange={setResourceSection}
         onOpenChange={setIsResourceDrawerOpen}
         onImport={requestImageImport}
@@ -576,6 +687,44 @@ function createImageNode(asset: ImageAsset, index: number, point: CanvasPoint): 
     zIndex: index + 1,
     createdAt: Date.now() + index,
   };
+}
+
+function createBlankProject(id: string, name: string): CanvasProject {
+  const now = Date.now();
+  return {
+    id,
+    name,
+    nodes: [],
+    viewport: DEFAULT_VIEWPORT,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function upsertProject(projects: CanvasProject[], project: CanvasProject): CanvasProject[] {
+  const index = projects.findIndex((candidate) => candidate.id === project.id);
+  if (index < 0) {
+    return [...projects, project];
+  }
+  return projects.map((candidate) => candidate.id === project.id ? project : candidate);
+}
+
+function removeAssetReferences(nodes: CanvasNode[], assetId: string): CanvasNode[] {
+  return nodes
+    .filter((node) => node.type !== "image" || node.assetId !== assetId)
+    .map((node) => {
+      if (node.type !== "generation") {
+        return node;
+      }
+      return {
+        ...node,
+        request: {
+          ...node.request,
+          inputAssetIds: node.request.inputAssetIds.filter((candidate) => candidate !== assetId),
+        },
+        results: node.results.filter((result) => result.id !== assetId),
+      };
+    });
 }
 
 function createGenerationNode(

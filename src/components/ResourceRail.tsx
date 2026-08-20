@@ -3,10 +3,12 @@ import {
   ImageSquare,
   MagnifyingGlass,
   Plus,
+  Trash,
   Toolbox,
   X,
 } from "@phosphor-icons/react";
 import type { CanvasAssetView } from "../features/canvas/CanvasStage";
+import type { CanvasProject } from "../../shared";
 
 export type ResourceSection = "projects" | "materials" | "tools";
 
@@ -14,7 +16,12 @@ interface ResourceRailProps {
   active: ResourceSection;
   isOpen: boolean;
   assets: CanvasAssetView[];
+  projects: CanvasProject[];
+  activeProjectId: string;
   onAssetSelect: (assetId: string) => void;
+  onAssetRemove: (assetId: string) => void;
+  onProjectCreate: () => void;
+  onProjectSelect: (projectId: string) => void;
   onChange: (section: ResourceSection) => void;
   onOpenChange: (open: boolean) => void;
   onImport: () => void;
@@ -34,7 +41,12 @@ export function ResourceRail({
   active,
   isOpen,
   assets,
+  projects,
+  activeProjectId,
   onAssetSelect,
+  onAssetRemove,
+  onProjectCreate,
+  onProjectSelect,
   onChange,
   onOpenChange,
   onImport,
@@ -93,17 +105,39 @@ export function ResourceRail({
               <input type="search" placeholder="搜索素材" aria-label="搜索素材" />
             </label>
             <div className="resource-groups">
-              <ResourceGroup label="设备素材" assets={importedAssets} onAssetSelect={onAssetSelect} onImport={onImport} />
+              <ResourceGroup label="设备素材" assets={importedAssets} onAssetSelect={onAssetSelect} onAssetRemove={onAssetRemove} onImport={onImport} />
               <ResourceGroup label="生成结果" assets={generatedAssets} onAssetSelect={onAssetSelect} />
             </div>
           </>
         ) : active === "projects" ? (
-          <div className="project-list">
-            <button className="project-row is-current" type="button">
-              <span className="project-thumbnail"><ImageSquare /></span>
-              <span><strong>未命名工业设计项目</strong><small>{assets.length} 个素材 · 当前</small></span>
+          <>
+            <button className="project-create-action" type="button" onClick={onProjectCreate}>
+              <Plus weight="bold" />
+              <span><strong>新建项目</strong><small>创建一张独立的无限画布</small></span>
             </button>
-          </div>
+            <div className="project-list">
+              {projects.map((project) => {
+                const isCurrent = project.id === activeProjectId;
+                const materialCount = new Set(project.nodes.flatMap((node) => (
+                  node.type === "image" ? [node.assetId] : node.type === "generation" ? node.request.inputAssetIds : []
+                ))).size;
+                return (
+                  <button
+                    className={isCurrent ? "project-row is-current" : "project-row"}
+                    key={project.id}
+                    type="button"
+                    onClick={() => onProjectSelect(project.id)}
+                  >
+                    <span className="project-thumbnail"><ImageSquare /></span>
+                    <span>
+                      <strong>{project.name}</strong>
+                      <small>{materialCount} 个素材{isCurrent ? " · 当前" : ""}</small>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
         ) : (
           <div className="compact-empty">
             <Toolbox />
@@ -120,11 +154,13 @@ function ResourceGroup({
   label,
   assets,
   onAssetSelect,
+  onAssetRemove,
   onImport,
 }: {
   label: string;
   assets: CanvasAssetView[];
   onAssetSelect: (assetId: string) => void;
+  onAssetRemove?: (assetId: string) => void;
   onImport?: () => void;
 }) {
   return (
@@ -136,16 +172,28 @@ function ResourceGroup({
       {assets.length ? (
         <div className="asset-grid">
           {assets.map(({ asset, displayUri }) => (
-            <button
-              className="asset-tile"
-              key={asset.id}
-              type="button"
-              title={`${asset.name} · 点击添加到画布`}
-              onClick={() => onAssetSelect(asset.id)}
-            >
-              <img src={displayUri} alt={asset.name} />
-              <span>{asset.name}</span>
-            </button>
+            <div className="asset-tile" key={asset.id}>
+              <button
+                className="asset-tile-select"
+                type="button"
+                title={`${asset.name} · 点击添加到画布`}
+                onClick={() => onAssetSelect(asset.id)}
+              >
+                <img src={displayUri} alt={asset.name} />
+                <span>{asset.name}</span>
+              </button>
+              {onAssetRemove && (
+                <button
+                  className="asset-remove-action"
+                  type="button"
+                  title={`移除 ${asset.name}`}
+                  aria-label={`移除设备素材 ${asset.name}`}
+                  onClick={() => onAssetRemove(asset.id)}
+                >
+                  <Trash />
+                </button>
+              )}
+            </div>
           ))}
         </div>
       ) : onImport ? (
