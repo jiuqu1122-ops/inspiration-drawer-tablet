@@ -9,7 +9,6 @@ import type {
 import {
   buildImageRulePrompt,
   buildIndustrialDesignPrompt,
-  IMAGE_RULE_KEYS,
   isImageModelPresetId,
 } from "../../shared";
 import { createId } from "../utils/id";
@@ -63,8 +62,6 @@ export class TauriImageGenerationService implements ImageGenerationService {
         : "No reference images are connected.",
       `Target aspect ratio: ${request.aspectRatio}. Detail tier: ${request.resolution}.`,
     ].filter(Boolean).join("\n\n"));
-    const ruleKeys = IMAGE_RULE_KEYS.filter((key) => context.rules?.[key]);
-
     const images = await invoke<NativeGeneratedImage[]>("generate_server_images", {
       input: {
         requestId: request.id,
@@ -73,7 +70,6 @@ export class TauriImageGenerationService implements ImageGenerationService {
         aspectRatio: request.aspectRatio,
         resolution: request.resolution,
         count: request.count,
-        ruleKeys,
         references,
       },
     });
