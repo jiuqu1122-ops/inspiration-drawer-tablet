@@ -7,6 +7,7 @@ export interface StorageService {
   saveProject(project: CanvasProject): Promise<void>;
   importDeviceImage(input: DeviceImageImport): Promise<ImageAsset>;
   saveGeneratedImage(input: ImageAsset): Promise<ImageAsset>;
+  listImageAssets(): Promise<ImageAsset[]>;
   getImageAsset(assetId: string): Promise<ImageAsset | null>;
   resolveDisplayUri(asset: ImageAsset): Promise<string>;
   removeImageAsset(assetId: string): Promise<void>;
