@@ -61,6 +61,7 @@ export function AssistantPanel({
           <textarea
             id="design-prompt"
             value={prompt}
+            maxLength={1200}
             onChange={(event) => onPromptChange(event.currentTarget.value)}
             placeholder="例如：一款适合共享办公空间的模块化桌面照明产品，阳极氧化铝与半透明树脂材质..."
           />

@@ -8,9 +8,12 @@ import {
 
 interface TopBarProps {
   zoom: number;
+  isImporting: boolean;
+  onImport: () => void;
+  onGenerate: () => void;
 }
 
-export function TopBar({ zoom }: TopBarProps) {
+export function TopBar({ zoom, isImporting, onImport, onGenerate }: TopBarProps) {
   return (
     <header className="top-bar">
       <div className="brand-lockup" aria-label="Inspiration Drawer Tablet">
@@ -35,11 +38,11 @@ export function TopBar({ zoom }: TopBarProps) {
           </button>
         </div>
         <span className="zoom-readout" aria-label={`画布缩放 ${zoom}%`}>{zoom}%</span>
-        <button className="secondary-action" type="button">
+        <button className="secondary-action" type="button" onClick={onImport} disabled={isImporting}>
           <ImageSquare />
-          <span>导入素材</span>
+          <span>{isImporting ? "导入中" : "导入素材"}</span>
         </button>
-        <button className="primary-action" type="button">
+        <button className="primary-action" type="button" onClick={onGenerate}>
           <MagicWand weight="fill" />
           <span>生成图像</span>
         </button>

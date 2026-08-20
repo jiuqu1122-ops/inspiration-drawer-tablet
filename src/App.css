@@ -39,6 +39,21 @@ button {
   color: inherit;
 }
 
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.visually-hidden {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 button:focus-visible,
 textarea:focus-visible {
   outline: 3px solid rgba(8, 127, 104, 0.25);
@@ -340,6 +355,63 @@ textarea:focus-visible {
   font-size: 11px;
 }
 
+.resource-placeholder.is-action {
+  display: flex;
+  width: 100%;
+  border: 1px dashed #b9c7c0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--accent-strong);
+  cursor: pointer;
+}
+
+.resource-placeholder.is-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.asset-tile {
+  position: relative;
+  min-width: 0;
+  min-height: 82px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #e9ede9;
+  cursor: pointer;
+}
+
+.asset-tile img {
+  width: 100%;
+  height: 82px;
+  object-fit: cover;
+}
+
+.asset-tile span {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  left: 4px;
+  overflow: hidden;
+  padding: 4px 5px;
+  border-radius: 7px;
+  color: white;
+  background: rgba(23, 27, 24, 0.7);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  backdrop-filter: blur(6px);
+}
+
 .compact-empty {
   margin-top: 24px;
   padding: 16px;
@@ -364,6 +436,121 @@ textarea:focus-visible {
   opacity: 0.42;
   background-image: radial-gradient(circle, #a8afaa 1px, transparent 1px);
   background-size: 22px 22px;
+}
+
+.canvas-viewport {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.canvas-node {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 7px;
+  border: 2px solid transparent;
+  border-radius: 15px;
+  background: white;
+  box-shadow: 0 6px 18px rgba(32, 37, 34, 0.1);
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  will-change: transform;
+}
+
+.canvas-node:active {
+  cursor: grabbing;
+}
+
+.canvas-node.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(8, 127, 104, 0.14), 0 10px 26px rgba(32, 37, 34, 0.14);
+}
+
+.canvas-node img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 9px;
+  object-fit: cover;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+.node-title {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  max-width: calc(100% - 54px);
+  overflow: hidden;
+  padding: 5px 8px;
+  border-radius: 8px;
+  color: white;
+  background: rgba(21, 25, 22, 0.7);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+  backdrop-filter: blur(7px);
+}
+
+.node-more {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  place-items: center;
+  color: white;
+  background: rgba(21, 25, 22, 0.7);
+  pointer-events: none;
+  backdrop-filter: blur(7px);
+}
+
+.node-more svg {
+  width: 17px;
+  height: 17px;
+}
+
+.canvas-context-menu {
+  position: absolute;
+  z-index: 100;
+  width: 164px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 16px 40px rgba(32, 37, 34, 0.18);
+  transform: translate(-12px, 12px);
+  backdrop-filter: blur(12px);
+}
+
+.canvas-context-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  align-items: center;
+  gap: 8px;
+  color: #9a332b;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.canvas-context-menu button:hover {
+  background: #faece9;
+}
+
+.canvas-context-menu svg {
+  width: 17px;
+  height: 17px;
 }
 
 .canvas-empty-state {
@@ -605,6 +792,34 @@ textarea:focus-visible {
 .send-action svg {
   width: 18px;
   height: 18px;
+}
+
+.workbench-notice {
+  position: fixed;
+  z-index: 120;
+  top: 76px;
+  left: 50%;
+  max-width: min(440px, calc(100vw - 40px));
+  min-height: 40px;
+  padding: 10px 14px;
+  border: 1px solid rgba(32, 37, 34, 0.1);
+  border-radius: 12px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 10px 28px rgba(32, 37, 34, 0.12);
+  transform: translateX(-50%);
+  font-size: 12px;
+  backdrop-filter: blur(12px);
+}
+
+.workbench-notice.is-success {
+  color: var(--accent-strong);
+  border-color: #bad8ce;
+}
+
+.workbench-notice.is-error {
+  color: #92352d;
+  border-color: #e4bdb8;
 }
 
 @media (max-width: 1120px) and (orientation: landscape) {

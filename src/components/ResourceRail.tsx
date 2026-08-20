@@ -1,10 +1,14 @@
-import { Folders, ImageSquare, Toolbox } from "@phosphor-icons/react";
+import { Folders, ImageSquare, Plus, Toolbox } from "@phosphor-icons/react";
+import type { CanvasAssetView } from "../features/canvas/CanvasStage";
 
 export type ResourceSection = "projects" | "materials" | "tools";
 
 interface ResourceRailProps {
   active: ResourceSection;
+  assets: CanvasAssetView[];
+  onAssetSelect: (assetId: string) => void;
   onChange: (section: ResourceSection) => void;
+  onImport: () => void;
 }
 
 const sections: Array<{
@@ -17,7 +21,16 @@ const sections: Array<{
   { id: "tools", label: "工具", icon: Toolbox },
 ];
 
-export function ResourceRail({ active, onChange }: ResourceRailProps) {
+export function ResourceRail({
+  active,
+  assets,
+  onAssetSelect,
+  onChange,
+  onImport,
+}: ResourceRailProps) {
+  const importedAssets = assets.filter((entry) => entry.asset.source === "device");
+  const generatedAssets = assets.filter((entry) => entry.asset.source === "generated");
+
   return (
     <aside className="resource-panel" aria-label="项目与素材">
       <nav className="resource-nav" aria-label="资源导航">
@@ -41,17 +54,28 @@ export function ResourceRail({ active, onChange }: ResourceRailProps) {
             <span className="eyebrow">LIBRARY</span>
             <h2>{active === "materials" ? "灵感素材" : active === "projects" ? "项目" : "设计工具"}</h2>
           </div>
-          <button className="small-action" type="button">新建</button>
+          <button className="small-action" type="button" onClick={active === "materials" ? onImport : undefined}>
+            {active === "materials" ? "导入" : "新建"}
+          </button>
         </div>
 
         {active === "materials" ? (
           <div className="resource-groups">
-            <ResourceGroup label="本次导入" count={0} />
-            <ResourceGroup label="生成结果" count={0} />
+            <ResourceGroup
+              label="本次导入"
+              assets={importedAssets}
+              onAssetSelect={onAssetSelect}
+              onImport={onImport}
+            />
+            <ResourceGroup
+              label="生成结果"
+              assets={generatedAssets}
+              onAssetSelect={onAssetSelect}
+            />
           </div>
         ) : (
           <div className="compact-empty">
-            <span>{active === "projects" ? "尚未创建项目" : "工具将在画布接入后显示"}</span>
+            <span>{active === "projects" ? "尚未创建更多项目" : "绘图工具将在手写笔阶段接入"}</span>
           </div>
         )}
       </div>
@@ -59,14 +83,45 @@ export function ResourceRail({ active, onChange }: ResourceRailProps) {
   );
 }
 
-function ResourceGroup({ label, count }: { label: string; count: number }) {
+function ResourceGroup({
+  label,
+  assets,
+  onAssetSelect,
+  onImport,
+}: {
+  label: string;
+  assets: CanvasAssetView[];
+  onAssetSelect: (assetId: string) => void;
+  onImport?: () => void;
+}) {
   return (
     <section className="resource-group">
       <div className="resource-group-heading">
         <h3>{label}</h3>
-        <span>{count}</span>
+        <span>{assets.length}</span>
       </div>
-      <div className="resource-placeholder">暂无图片</div>
+      {assets.length ? (
+        <div className="asset-grid">
+          {assets.map(({ asset, displayUri }) => (
+            <button
+              className="asset-tile"
+              key={asset.id}
+              type="button"
+              title={asset.name}
+              onClick={() => onAssetSelect(asset.id)}
+            >
+              <img src={displayUri} alt="" />
+              <span>{asset.name}</span>
+            </button>
+          ))}
+        </div>
+      ) : onImport ? (
+        <button className="resource-placeholder is-action" type="button" onClick={onImport}>
+          <Plus />从设备添加图片
+        </button>
+      ) : (
+        <div className="resource-placeholder">暂无图片</div>
+      )}
     </section>
   );
 }
