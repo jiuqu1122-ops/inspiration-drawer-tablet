@@ -3,6 +3,7 @@ import type {
   ImageGenerationRequest,
   ImageGenerationStatus,
 } from "./generation";
+import type { ImageRulePresetId, ImageRuleState } from "./imageRules";
 
 export interface CanvasPoint {
   x: number;
@@ -39,7 +40,14 @@ export interface CanvasGenerationNode extends CanvasNodeBase {
   error?: string;
 }
 
-export type CanvasNode = CanvasImageNode | CanvasGenerationNode;
+export interface CanvasRuleNode extends CanvasNodeBase {
+  type: "rule";
+  title: string;
+  presetId: ImageRulePresetId;
+  rules: ImageRuleState;
+}
+
+export type CanvasNode = CanvasImageNode | CanvasGenerationNode | CanvasRuleNode;
 
 export interface CanvasProject {
   id: string;

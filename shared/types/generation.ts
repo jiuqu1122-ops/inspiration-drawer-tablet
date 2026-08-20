@@ -1,7 +1,9 @@
 export type ImageGenerationProvider =
+  | "server-gateway"
   | "openai-compatible"
   | "new-api"
   | "xais-chat"
+  | "bigmodel"
   | "custom";
 
 export type ImageAspectRatio = "1:1" | "4:3" | "3:4" | "16:9" | "9:16";
@@ -17,6 +19,7 @@ export interface ImageGenerationRequest {
   id: string;
   prompt: string;
   inputAssetIds: string[];
+  ruleNodeIds?: string[];
   model: ImageModelConfig;
   aspectRatio: ImageAspectRatio;
   resolution: ImageResolution;

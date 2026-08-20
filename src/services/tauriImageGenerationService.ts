@@ -1,11 +1,17 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
   GeneratedImageResult,
+  ImageAsset,
   ImageGenerationContext,
   ImageGenerationRequest,
   ImageGenerationService,
 } from "../../shared";
-import { buildIndustrialDesignPrompt } from "../../shared";
+import {
+  buildImageRulePrompt,
+  buildIndustrialDesignPrompt,
+  IMAGE_RULE_KEYS,
+  isImageModelPresetId,
+} from "../../shared";
 import { createId } from "../utils/id";
 
 interface NativeGeneratedImage {
@@ -13,35 +19,65 @@ interface NativeGeneratedImage {
   mimeType: string;
 }
 
+interface NativePromptOptimization {
+  optimizedPrompt: string;
+}
+
+interface ServerImageReference {
+  name: string;
+  mimeType: string;
+  dataUri: string;
+}
+
+/**
+ * The tablet never receives provider API keys or provider-specific endpoints.
+ * It sends stable public model IDs to the Inspiration Drawer application server,
+ * where the same XAIS / New API / Bigmodel routes as the desktop client are selected.
+ */
 export class TauriImageGenerationService implements ImageGenerationService {
   async generate(
     request: ImageGenerationRequest,
     context: ImageGenerationContext,
   ): Promise<GeneratedImageResult[]> {
-    if (context.signal?.aborted) {
-      throw new DOMException("生成任务已取消", "AbortError");
+    assertTauriRuntime();
+    assertNotAborted(context.signal);
+
+    if (request.model.provider !== "server-gateway") {
+      throw new Error("平板端只能通过 Inspiration Drawer 服务端网关生图");
     }
-    if (!isTauri()) {
-      throw new Error("生图请求需要在 Tauri 桌面预览或 Android 应用中运行");
-    }
-    if (request.model.provider !== "openai-compatible" && request.model.provider !== "custom") {
-      throw new Error(`当前版本暂不支持 ${request.model.provider} 生图协议`);
+    if (!isImageModelPresetId(request.model.model)) {
+      throw new Error("请选择平板端预设的生图模型");
     }
 
-    const images = await invoke<NativeGeneratedImage[]>("generate_openai_images", {
+    const references = await Promise.all(
+      context.inputAssets.slice(0, 8).map(toServerImageReference),
+    );
+    assertNotAborted(context.signal);
+
+    const rulePrompt = buildImageRulePrompt(context.rules);
+    const prompt = buildIndustrialDesignPrompt([
+      request.prompt,
+      rulePrompt,
+      references.length
+        ? `Reference material count: ${references.length}. Preserve connected references as the visual direction.`
+        : "No reference images are connected.",
+      `Target aspect ratio: ${request.aspectRatio}. Detail tier: ${request.resolution}.`,
+    ].filter(Boolean).join("\n\n"));
+    const ruleKeys = IMAGE_RULE_KEYS.filter((key) => context.rules?.[key]);
+
+    const images = await invoke<NativeGeneratedImage[]>("generate_server_images", {
       input: {
-        prompt: buildIndustrialDesignPrompt([
-          request.prompt,
-          context.inputAssets.length
-            ? `Reference material count: ${context.inputAssets.length}. Preserve the connected references as the visual direction.`
-            : "No reference images are connected.",
-          `Target aspect ratio: ${request.aspectRatio}. Detail tier: ${request.resolution}.`,
-        ].join("\n")),
-        size: getOpenAiSize(request.aspectRatio),
-        quality: getOpenAiQuality(request.resolution),
+        requestId: request.id,
+        model: request.model.model,
+        prompt,
+        aspectRatio: request.aspectRatio,
+        resolution: request.resolution,
         count: request.count,
+        ruleKeys,
+        references,
       },
     });
+    assertNotAborted(context.signal);
 
     return images.map((image) => ({
       id: createId("generated-result"),
@@ -51,24 +87,65 @@ export class TauriImageGenerationService implements ImageGenerationService {
       createdAt: Date.now(),
     }));
   }
+
+  async optimizePrompt(prompt: string): Promise<string> {
+    assertTauriRuntime();
+    const cleanPrompt = prompt.trim();
+    if (!cleanPrompt) {
+      throw new Error("请先输入需要优化的提示词");
+    }
+    const result = await invoke<NativePromptOptimization>("optimize_server_prompt", {
+      input: {
+        prompt: cleanPrompt,
+        mediaType: "image",
+        locale: "zh-CN",
+      },
+    });
+    return result.optimizedPrompt.trim();
+  }
 }
 
-function getOpenAiQuality(resolution: ImageGenerationRequest["resolution"]): string {
-  if (resolution === "4k") {
-    return "high";
+function assertTauriRuntime(): void {
+  if (!isTauri()) {
+    throw new Error("该功能需要在 Android 应用中运行");
   }
-  if (resolution === "2k") {
-    return "medium";
-  }
-  return "low";
 }
 
-function getOpenAiSize(aspectRatio: ImageGenerationRequest["aspectRatio"]): string {
-  if (aspectRatio === "4:3" || aspectRatio === "16:9") {
-    return "1536x1024";
+function assertNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException("生成任务已取消", "AbortError");
   }
-  if (aspectRatio === "3:4" || aspectRatio === "9:16") {
-    return "1024x1536";
+}
+
+async function toServerImageReference(asset: ImageAsset): Promise<ServerImageReference> {
+  if (asset.uri.startsWith("data:image/")) {
+    return {
+      name: asset.name,
+      mimeType: asset.mimeType,
+      dataUri: asset.uri,
+    };
   }
-  return "1024x1024";
+
+  const response = await fetch(asset.uri);
+  if (!response.ok) {
+    throw new Error(`无法读取参考素材：${asset.name}`);
+  }
+  const blob = await response.blob();
+  if (blob.size > 25 * 1024 * 1024) {
+    throw new Error(`参考素材超过 25 MB：${asset.name}`);
+  }
+  return {
+    name: asset.name,
+    mimeType: blob.type || asset.mimeType || "image/png",
+    dataUri: await blobToDataUri(blob),
+  };
+}
+
+function blobToDataUri(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("参考素材编码失败"));
+    reader.onload = () => resolve(String(reader.result));
+    reader.readAsDataURL(blob);
+  });
 }

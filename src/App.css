@@ -16,6 +16,8 @@
   --accent-soft: #e8f6fc;
   --danger: #a14238;
   --topbar-height: 52px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --app-top: calc(var(--topbar-height) + var(--safe-top));
 }
 
 * {
@@ -89,8 +91,8 @@ select:focus-visible {
   display: grid;
   grid-template-columns: minmax(190px, 1fr) auto minmax(390px, 1fr);
   align-items: center;
-  height: var(--topbar-height);
-  padding: 0 12px;
+  height: var(--app-top);
+  padding: var(--safe-top) 12px 0;
   border-bottom: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.94);
   box-shadow: 0 1px 0 rgba(36, 34, 31, 0.02);
@@ -248,7 +250,7 @@ select:focus-visible {
 .canvas-shell {
   position: absolute;
   z-index: 1;
-  top: var(--topbar-height);
+  top: var(--app-top);
   right: 0;
   bottom: 0;
   left: 0;
@@ -309,6 +311,26 @@ select:focus-visible {
   stroke-width: 2.5;
 }
 
+.node-connection-line.is-rule {
+  stroke: url(#rule-connection-gradient);
+}
+
+.node-connection-draft {
+  fill: none;
+  stroke: #169fdd;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 9 7;
+  vector-effect: non-scaling-stroke;
+}
+
+.connection-draft-point {
+  fill: white;
+  stroke: #169fdd;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
 .connection-point {
   fill: white;
   stroke-width: 3;
@@ -317,6 +339,10 @@ select:focus-visible {
 
 .connection-point.source {
   stroke: #12bfe8;
+}
+
+.connection-point.source.is-rule {
+  stroke: #e2a62f;
 }
 
 .connection-point.target {
@@ -434,6 +460,13 @@ select:focus-visible {
   border-color: #388ff0;
 }
 
+.input-port.is-targeted span {
+  transform: scale(1.55);
+  border-color: #148ece;
+  background: #e8f7fd;
+  box-shadow: 0 0 0 11px rgba(22, 159, 221, 0.2);
+}
+
 .image-node.is-connection-source .output-port span,
 .input-port.is-ready span {
   transform: scale(1.35);
@@ -521,15 +554,113 @@ select:focus-visible {
   display: grid;
   height: calc(100% - 54px);
   padding: 10px;
-  grid-template-rows: 48px minmax(150px, 1fr) 96px 52px;
+  grid-template-rows: 42px 50px minmax(132px, 1fr) 106px 52px;
   gap: 8px;
 }
 
-.reference-strip {
+.model-preset-switcher {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.model-preset-switcher button {
+  display: flex;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  color: #6c6862;
+  background: #faf9f7;
+  font-size: 8px;
+}
+
+.model-preset-switcher button span {
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-preset-switcher button small {
+  color: #9b968e;
+  font-size: 6px;
+}
+
+.model-preset-switcher button.is-active {
+  border-color: #9cd7ee;
+  color: #087cad;
+  background: #eaf7fc;
+  box-shadow: inset 0 0 0 1px rgba(22, 159, 221, 0.08);
+}
+
+.reference-strip,
+.node-inputs-strip {
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr);
   align-items: center;
   gap: 6px;
+}
+
+.node-input-items {
+  display: flex;
+  min-width: 0;
+  height: 46px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  align-items: center;
+  gap: 5px;
+  scrollbar-width: none;
+}
+
+.node-input-items::-webkit-scrollbar {
+  display: none;
+}
+
+.connected-rule-chip {
+  display: flex;
+  max-width: 128px;
+  height: 32px;
+  padding: 0 4px 0 7px;
+  border: 1px solid #ead8a9;
+  border-radius: 7px;
+  align-items: center;
+  gap: 4px;
+  color: #7b5d1e;
+  background: #fff9e9;
+  font-size: 7px;
+}
+
+.connected-rule-chip > svg {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+}
+
+.connected-rule-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connected-rule-chip button {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  place-items: center;
+  color: inherit;
+  background: rgba(133, 96, 20, 0.08);
+}
+
+.connected-rule-chip button svg {
+  width: 9px;
+  height: 9px;
 }
 
 .field-label {
@@ -714,6 +845,183 @@ select:focus-visible {
   gap: 4px;
 }
 
+.prompt-field-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.prompt-optimize-action {
+  display: inline-flex;
+  min-height: 25px;
+  padding: 0 7px;
+  border: 1px solid #cde7f2;
+  border-radius: 6px;
+  align-items: center;
+  gap: 4px;
+  color: #087aa9;
+  background: #edf8fc;
+  font-size: 7px;
+  font-weight: 700;
+}
+
+.prompt-optimize-action svg {
+  width: 11px;
+  height: 11px;
+}
+
+.prompt-optimize-action .button-spinner {
+  width: 10px;
+  height: 10px;
+  border-color: rgba(8, 122, 169, 0.24);
+  border-top-color: #087aa9;
+}
+
+.rule-node {
+  overflow: visible;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.98);
+}
+
+.rule-node-header {
+  display: flex;
+  height: 52px;
+  padding: 0 11px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+  gap: 8px;
+  cursor: grab;
+}
+
+.rule-node-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border: 1px solid #ead8aa;
+  border-radius: 8px;
+  place-items: center;
+  color: #8b671c;
+  background: #fff8e6;
+}
+
+.rule-node-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.rule-node-header > span:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.rule-node-header strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-node-header small {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.rule-node-content {
+  display: grid;
+  height: calc(100% - 52px);
+  min-height: 0;
+  padding: 10px;
+  grid-template-rows: 50px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.rule-preset-field {
+  display: grid;
+  gap: 4px;
+}
+
+.rule-preset-field > span {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 650;
+}
+
+.rule-preset-field select {
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  outline: 0;
+  background: #faf9f7;
+  font-size: 9px;
+}
+
+.rule-toggle-list {
+  display: grid;
+  min-height: 0;
+  overflow-y: auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 5px;
+}
+
+.rule-toggle {
+  display: flex;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 7px;
+  border: 1px solid #e5e2dc;
+  border-radius: 7px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+  color: #716d66;
+  background: #faf9f7;
+  font-size: 7px;
+  text-align: left;
+}
+
+.rule-toggle > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-toggle i {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border: 1px solid #b8b3aa;
+  border-radius: 50%;
+  background: white;
+}
+
+.rule-toggle.is-enabled {
+  border-color: #e3c570;
+  color: #70520f;
+  background: #fff9e8;
+}
+
+.rule-toggle.is-enabled i {
+  border-color: #c9901d;
+  background: #dca52e;
+  box-shadow: 0 0 0 3px rgba(220, 165, 46, 0.13);
+}
+
+.rule-output-port span {
+  border-color: #dda22d;
+}
+
+.rule-node.is-connection-source .rule-output-port span {
+  transform: scale(1.35);
+  box-shadow: 0 0 0 7px rgba(221, 162, 45, 0.18);
+}
+
 .node-prompt-field textarea {
   width: 100%;
   min-height: 0;
@@ -798,7 +1106,7 @@ select:focus-visible {
 .resource-panel {
   position: fixed;
   z-index: 45;
-  top: calc(var(--topbar-height) + 12px);
+  top: calc(var(--app-top) + 12px);
   bottom: 14px;
   left: 12px;
   display: flex;
@@ -1325,7 +1633,7 @@ select:focus-visible {
 .workbench-notice {
   position: fixed;
   z-index: 120;
-  top: calc(var(--topbar-height) + 12px);
+  top: calc(var(--app-top) + 12px);
   left: 50%;
   max-width: min(460px, calc(100vw - 40px));
   min-height: 40px;
@@ -1376,7 +1684,7 @@ select:focus-visible {
 
   .top-bar {
     grid-template-columns: auto minmax(0, 1fr) auto;
-    padding: 0 8px;
+    padding: var(--safe-top) 8px 0;
   }
 
   .brand-text,
@@ -1412,7 +1720,7 @@ select:focus-visible {
   }
 
   .resource-panel {
-    top: calc(var(--topbar-height) + 8px);
+    top: calc(var(--app-top) + 8px);
     bottom: 76px;
     left: 8px;
   }

@@ -9,13 +9,15 @@
 - 通过系统图片选择器批量导入设备图片
 - 图片与项目数据写入 WebView 的应用沙盒，不保存 Windows 路径
 - Pointer Events 画布：手指或手写笔拖动、画布平移、双指缩放、长按菜单
-- 节点式生图：节点内 Prompt、比例、清晰度、张数、运行状态与结果预览
-- 图片节点与生图节点可建立参考素材连线，生成结果自动保存到素材库
-- 原生 Rust 生图网络请求与结果沙盒缓存
+- 节点式生图：预设 Nano Banana Pro、Nano Banana 2、GPT Image 2
+- 图片节点、规则节点可通过拖拽或点按连接到生图节点
+- 16 项桌面端同源图像规则、规则预设与服务端提示词优化
+- 生成结果自动保存到素材库，应用使用沉浸式全屏并支持临时滑出系统栏
+- 原生 Rust 服务端网关请求与结果沙盒缓存
 
-应用界面不提供 API 地址、模型或密钥输入。发行构建由应用侧通过
-`INSPIRATION_DRAWER_IMAGE_API_KEY`、`INSPIRATION_DRAWER_IMAGE_API_BASE_URL` 和
-`INSPIRATION_DRAWER_IMAGE_MODEL` 注入生图服务配置，密钥不会写入项目或本地数据库。
+应用界面不提供渠道 API 地址或密钥输入。APK 只调用 Inspiration Drawer 应用服务端，
+由服务端持有并路由 Windows 端同源的 XAIS、New API 与 Bigmodel 渠道。接口契约、三模型
+路由表和构建配置见 [docs/server-gateway.md](docs/server-gateway.md)。
 
 ## Web 与桌面预览
 

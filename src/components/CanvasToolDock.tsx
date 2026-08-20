@@ -4,12 +4,14 @@ import {
   ImageSquare,
   MagicWand,
   Play,
+  SlidersHorizontal,
 } from "@phosphor-icons/react";
 
 interface CanvasToolDockProps {
   canRun: boolean;
   onImport: () => void;
   onAddGeneration: () => void;
+  onAddRules: () => void;
   onRun: () => void;
   onArrange: () => void;
   onWorkflow: () => void;
@@ -19,6 +21,7 @@ export function CanvasToolDock({
   canRun,
   onImport,
   onAddGeneration,
+  onAddRules,
   onRun,
   onArrange,
   onWorkflow,
@@ -27,6 +30,7 @@ export function CanvasToolDock({
     <nav className="canvas-tool-dock" aria-label="画布节点工具">
       <ToolButton label="图片" icon={ImageSquare} onClick={onImport} />
       <ToolButton label="生图节点" icon={MagicWand} onClick={onAddGeneration} />
+      <ToolButton label="规则节点" icon={SlidersHorizontal} onClick={onAddRules} />
       <ToolButton label="工作流" icon={FlowArrow} onClick={onWorkflow} />
       <span className="tool-dock-divider" aria-hidden="true" />
       <ToolButton label="运行" icon={Play} onClick={onRun} disabled={!canRun} />

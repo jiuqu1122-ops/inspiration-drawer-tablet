@@ -5,6 +5,7 @@ import {
   Link,
   MagicWand,
   Play,
+  SlidersHorizontal,
   Trash,
   X,
 } from "@phosphor-icons/react";
@@ -16,13 +17,21 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import type {
-  CanvasGenerationNode,
-  CanvasNode,
-  CanvasPoint,
-  CanvasViewport,
-  ImageAsset,
-  ImageGenerationRequest,
+import {
+  getImageModelPreset,
+  IMAGE_MODEL_PRESETS,
+  IMAGE_RULE_DEFINITIONS,
+  IMAGE_RULE_KEYS,
+  IMAGE_RULE_PRESETS,
+  type CanvasGenerationNode,
+  type CanvasNode,
+  type CanvasPoint,
+  type CanvasRuleNode,
+  type CanvasViewport,
+  type ImageAsset,
+  type ImageGenerationRequest,
+  type ImageRulePresetId,
+  type ImageRuleState,
 } from "../../../shared";
 
 export interface CanvasAssetView {
@@ -31,7 +40,7 @@ export interface CanvasAssetView {
 }
 
 export type GenerationNodeUpdate = Partial<
-  Pick<ImageGenerationRequest, "prompt" | "aspectRatio" | "resolution" | "count">
+  Pick<ImageGenerationRequest, "prompt" | "aspectRatio" | "resolution" | "count" | "model">
 >;
 
 interface CanvasStageProps {
@@ -39,6 +48,7 @@ interface CanvasStageProps {
   assets: CanvasAssetView[];
   viewport: CanvasViewport;
   selectedNodeId?: string;
+  optimizingNodeIds: ReadonlySet<string>;
   onImportRequest: () => void;
   onGenerateRequest: () => void;
   onViewportChange: (viewport: CanvasViewport) => void;
@@ -46,9 +56,12 @@ interface CanvasStageProps {
   onNodeRemove: (nodeId: string) => void;
   onSelectNode: (nodeId?: string) => void;
   onGenerationChange: (nodeId: string, update: GenerationNodeUpdate) => void;
+  onRuleNodeChange: (nodeId: string, presetId: ImageRulePresetId, rules: ImageRuleState) => void;
+  onOptimizePrompt: (nodeId: string) => void;
   onRunGeneration: (nodeId: string) => void;
   onConnect: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectReference: (targetNodeId: string, assetId: string) => void;
+  onDisconnectRule: (targetNodeId: string, ruleNodeId: string) => void;
 }
 
 type Gesture =
@@ -70,7 +83,24 @@ type Gesture =
       startPoint: CanvasPoint;
       startNode: CanvasPoint;
       currentNode: CanvasPoint;
+    }
+  | {
+      mode: "connect";
+      pointerId: number;
+      sourceNodeId: string;
+      startPoint: CanvasPoint;
+      startWorld: CanvasPoint;
+      currentWorld: CanvasPoint;
+      targetNodeId?: string;
+      moved: boolean;
     };
+
+interface ConnectionDraft {
+  sourceNodeId: string;
+  start: CanvasPoint;
+  current: CanvasPoint;
+  targetNodeId?: string;
+}
 
 interface ContextMenuState {
   nodeId: string;
@@ -81,12 +111,14 @@ interface ContextMenuState {
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 4;
 const LONG_PRESS_MS = 520;
+const CONNECTION_DRAG_THRESHOLD = 8;
 
 export function CanvasStage({
   nodes,
   assets,
   viewport,
   selectedNodeId,
+  optimizingNodeIds,
   onImportRequest,
   onGenerateRequest,
   onViewportChange,
@@ -94,9 +126,12 @@ export function CanvasStage({
   onNodeRemove,
   onSelectNode,
   onGenerationChange,
+  onRuleNodeChange,
+  onOptimizePrompt,
   onRunGeneration,
   onConnect,
   onDisconnectReference,
+  onDisconnectRule,
 }: CanvasStageProps) {
   const stageRef = useRef<HTMLDivElement>(null);
   const viewportLayerRef = useRef<HTMLDivElement>(null);
@@ -108,10 +143,15 @@ export function CanvasStage({
   const longPressOriginRef = useRef<CanvasPoint | undefined>(undefined);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
   const [connectionSourceId, setConnectionSourceId] = useState<string>();
+  const [connectionDraft, setConnectionDraft] = useState<ConnectionDraft>();
 
   const assetsById = useMemo(
     () => new Map(assets.map((entry) => [entry.asset.id, entry])),
     [assets],
+  );
+  const rulesById = useMemo(
+    () => new Map(nodes.filter((node): node is CanvasRuleNode => node.type === "rule").map((node) => [node.id, node])),
+    [nodes],
   );
   const connections = useMemo(() => collectConnections(nodes), [nodes]);
 
@@ -134,11 +174,23 @@ export function CanvasStage({
     longPressTimerRef.current = undefined;
   }, []);
 
-  const getStagePoint = (event: ReactPointerEvent<HTMLDivElement>): CanvasPoint => {
+  const getStagePointFromClient = (clientX: number, clientY: number): CanvasPoint => {
     const bounds = stageRef.current?.getBoundingClientRect();
     return {
-      x: event.clientX - (bounds?.left ?? 0),
-      y: event.clientY - (bounds?.top ?? 0),
+      x: clientX - (bounds?.left ?? 0),
+      y: clientY - (bounds?.top ?? 0),
+    };
+  };
+
+  const getStagePoint = (event: ReactPointerEvent<HTMLDivElement>): CanvasPoint => (
+    getStagePointFromClient(event.clientX, event.clientY)
+  );
+
+  const stageToWorld = (point: CanvasPoint): CanvasPoint => {
+    const current = liveViewportRef.current;
+    return {
+      x: (point.x - current.x) / current.scale,
+      y: (point.y - current.y) / current.scale,
     };
   };
 
@@ -147,7 +199,6 @@ export function CanvasStage({
     if (points.length < 2) {
       return;
     }
-
     const [first, second] = points;
     const midpoint = getMidpoint(first, second);
     const current = liveViewportRef.current;
@@ -160,6 +211,37 @@ export function CanvasStage({
       },
     };
   }, []);
+
+  const beginConnection = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    sourceNode: Extract<CanvasNode, { type: "image" | "rule" }>,
+  ) => {
+    if (event.button !== 0 && event.pointerType === "mouse") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const stage = stageRef.current;
+    if (!stage) {
+      return;
+    }
+    const stagePoint = getStagePointFromClient(event.clientX, event.clientY);
+    const startWorld = getOutputPoint(sourceNode);
+    stage.setPointerCapture(event.pointerId);
+    activePointersRef.current.set(event.pointerId, stagePoint);
+    gestureRef.current = {
+      mode: "connect",
+      pointerId: event.pointerId,
+      sourceNodeId: sourceNode.id,
+      startPoint: stagePoint,
+      startWorld,
+      currentWorld: startWorld,
+      moved: false,
+    };
+    setConnectionSourceId(sourceNode.id);
+    setConnectionDraft({ sourceNodeId: sourceNode.id, start: startWorld, current: startWorld });
+    onSelectNode(sourceNode.id);
+  };
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if ((event.target as HTMLElement).closest("[data-canvas-control='true']")) {
@@ -180,6 +262,10 @@ export function CanvasStage({
       const currentGesture = gestureRef.current;
       if (currentGesture?.mode === "drag") {
         onNodeMove(currentGesture.nodeId, currentGesture.currentNode);
+      }
+      if (currentGesture?.mode === "connect") {
+        setConnectionDraft(undefined);
+        setConnectionSourceId(undefined);
       }
       beginPinch();
       return;
@@ -207,6 +293,7 @@ export function CanvasStage({
     }
 
     setConnectionSourceId(undefined);
+    setConnectionDraft(undefined);
     onSelectNode(undefined);
     gestureRef.current = {
       mode: "pan",
@@ -225,6 +312,24 @@ export function CanvasStage({
     activePointersRef.current.set(event.pointerId, point);
     const gesture = gestureRef.current;
 
+    if (gesture?.mode === "connect" && gesture.pointerId === event.pointerId) {
+      const targetNodeId = findGenerationTargetAtPoint(event.clientX, event.clientY);
+      const targetNode = targetNodeId
+        ? nodes.find((node): node is CanvasGenerationNode => node.id === targetNodeId && node.type === "generation")
+        : undefined;
+      const currentWorld = targetNode ? getInputPoint(targetNode) : stageToWorld(point);
+      gesture.currentWorld = currentWorld;
+      gesture.targetNodeId = targetNodeId;
+      gesture.moved = gesture.moved || getDistance(gesture.startPoint, point) >= CONNECTION_DRAG_THRESHOLD;
+      setConnectionDraft({
+        sourceNodeId: gesture.sourceNodeId,
+        start: gesture.startWorld,
+        current: currentWorld,
+        targetNodeId,
+      });
+      return;
+    }
+
     if (longPressOriginRef.current && getDistance(longPressOriginRef.current, point) > 8) {
       clearLongPress();
     }
@@ -234,7 +339,6 @@ export function CanvasStage({
         beginPinch();
         return;
       }
-
       const [first, second] = [...activePointersRef.current.values()];
       const midpoint = getMidpoint(first, second);
       const nextScale = clamp(
@@ -292,6 +396,19 @@ export function CanvasStage({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
 
+    if (gesture?.mode === "connect" && gesture.pointerId === event.pointerId) {
+      const targetNodeId = gesture.targetNodeId ?? findGenerationTargetAtPoint(event.clientX, event.clientY);
+      if (targetNodeId && targetNodeId !== gesture.sourceNodeId) {
+        onConnect(gesture.sourceNodeId, targetNodeId);
+        setConnectionSourceId(undefined);
+      } else if (gesture.moved) {
+        setConnectionSourceId(undefined);
+      }
+      setConnectionDraft(undefined);
+      gestureRef.current = undefined;
+      return;
+    }
+
     if (gesture?.mode === "drag" && gesture.pointerId === event.pointerId) {
       onNodeMove(gesture.nodeId, gesture.currentNode);
     }
@@ -330,20 +447,31 @@ export function CanvasStage({
               <stop offset="0" stopColor="#10bce5" />
               <stop offset="1" stopColor="#e2b841" />
             </linearGradient>
+            <linearGradient id="rule-connection-gradient" gradientUnits="userSpaceOnUse" x1="0" x2="420">
+              <stop offset="0" stopColor="#e7a930" />
+              <stop offset="1" stopColor="#55a984" />
+            </linearGradient>
           </defs>
-          {connections.map(({ source, target, key }, index) => {
-            const start = { x: source.x + source.width + 8, y: source.y + source.height / 2 };
-            const end = { x: target.x - 8, y: target.y + 76 + index * 2 };
+          {connections.map(({ source, target, key, kind }) => {
+            const start = getOutputPoint(source);
+            const end = getInputPoint(target);
             const path = createConnectionPath(start, end);
             return (
               <g key={key}>
                 <path className="node-connection-halo" d={path} />
-                <path className="node-connection-line" d={path} />
-                <circle className="connection-point source" cx={start.x} cy={start.y} r="5" />
+                <path className={`node-connection-line is-${kind}`} d={path} />
+                <circle className={`connection-point source is-${kind}`} cx={start.x} cy={start.y} r="5" />
                 <circle className="connection-point target" cx={end.x} cy={end.y} r="5" />
               </g>
             );
           })}
+          {connectionDraft && (
+            <g>
+              <path className="node-connection-halo is-draft" d={createConnectionPath(connectionDraft.start, connectionDraft.current)} />
+              <path className="node-connection-draft" d={createConnectionPath(connectionDraft.start, connectionDraft.current)} />
+              <circle className="connection-draft-point" cx={connectionDraft.current.x} cy={connectionDraft.current.y} r="6" />
+            </g>
+          )}
         </svg>
 
         {nodes.map((node) => {
@@ -360,10 +488,21 @@ export function CanvasStage({
                 isSelected={selectedNodeId === node.id}
                 isConnectionSource={connectionSourceId === node.id}
                 registerElement={(element) => registerNodeElement(node.id, element, nodeElementsRef.current)}
-                onArmConnection={() => {
-                  setConnectionSourceId((current) => current === node.id ? undefined : node.id);
-                  onSelectNode(node.id);
-                }}
+                onBeginConnection={(event) => beginConnection(event, node)}
+              />
+            );
+          }
+
+          if (node.type === "rule") {
+            return (
+              <RuleCanvasNode
+                key={node.id}
+                node={node}
+                isSelected={selectedNodeId === node.id}
+                isConnectionSource={connectionSourceId === node.id}
+                registerElement={(element) => registerNodeElement(node.id, element, nodeElementsRef.current)}
+                onBeginConnection={(event) => beginConnection(event, node)}
+                onChange={(presetId, rules) => onRuleNodeChange(node.id, presetId, rules)}
               />
             );
           }
@@ -373,8 +512,11 @@ export function CanvasStage({
               key={node.id}
               node={node}
               assetsById={assetsById}
+              rulesById={rulesById}
               isSelected={selectedNodeId === node.id}
+              isOptimizing={optimizingNodeIds.has(node.id)}
               hasPendingConnection={Boolean(connectionSourceId)}
+              isConnectionTarget={connectionDraft?.targetNodeId === node.id}
               registerElement={(element) => registerNodeElement(node.id, element, nodeElementsRef.current)}
               onAcceptConnection={() => {
                 if (connectionSourceId) {
@@ -383,8 +525,10 @@ export function CanvasStage({
                 }
               }}
               onChange={(update) => onGenerationChange(node.id, update)}
+              onOptimize={() => onOptimizePrompt(node.id)}
               onRun={() => onRunGeneration(node.id)}
               onDisconnectReference={(assetId) => onDisconnectReference(node.id, assetId)}
+              onDisconnectRule={(ruleNodeId) => onDisconnectRule(node.id, ruleNodeId)}
             />
           );
         })}
@@ -407,9 +551,9 @@ export function CanvasStage({
         </div>
       )}
 
-      {connectionSourceId && (
+      {connectionSourceId && !connectionDraft && (
         <div className="connection-hint" data-canvas-control="true">
-          <Link />已选择参考图，点击生图节点左侧连接点
+          <Link />已选择输出，点击生图节点输入点，或从输出点直接拖拽连线
           <button type="button" onClick={() => setConnectionSourceId(undefined)} aria-label="取消连接"><X /></button>
         </div>
       )}
@@ -434,7 +578,7 @@ export function CanvasStage({
 
       <div className="gesture-hint">
         <HandTap />
-        <span>双指缩放 · 拖动画布 · 长按节点</span>
+        <span>拖拽端口连线 · 双指缩放 · 长按节点</span>
       </div>
     </div>
   );
@@ -446,26 +590,21 @@ function ImageCanvasNode({
   isSelected,
   isConnectionSource,
   registerElement,
-  onArmConnection,
+  onBeginConnection,
 }: {
   node: Extract<CanvasNode, { type: "image" }>;
   assetView: CanvasAssetView;
   isSelected: boolean;
   isConnectionSource: boolean;
   registerElement: (element: HTMLDivElement | null) => void;
-  onArmConnection: () => void;
+  onBeginConnection: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <div
       ref={registerElement}
       className={`${isSelected ? "canvas-node image-node is-selected" : "canvas-node image-node"}${isConnectionSource ? " is-connection-source" : ""}`}
       data-canvas-node-id={node.id}
-      style={{
-        width: node.width,
-        height: node.height,
-        transform: `translate3d(${node.x}px, ${node.y}px, 0)`,
-        zIndex: node.zIndex,
-      }}
+      style={{ width: node.width, height: node.height, transform: `translate3d(${node.x}px, ${node.y}px, 0)`, zIndex: node.zIndex }}
     >
       <img src={assetView.displayUri} alt={node.title} draggable={false} />
       <span className="node-title">{node.title}</span>
@@ -475,8 +614,82 @@ function ImageCanvasNode({
         type="button"
         data-canvas-control="true"
         aria-pressed={isConnectionSource}
-        aria-label="把图片连接到生图节点"
-        onClick={onArmConnection}
+        aria-label="拖拽连接图片到生图节点"
+        onPointerDown={onBeginConnection}
+      >
+        <span />
+      </button>
+    </div>
+  );
+}
+
+function RuleCanvasNode({
+  node,
+  isSelected,
+  isConnectionSource,
+  registerElement,
+  onBeginConnection,
+  onChange,
+}: {
+  node: CanvasRuleNode;
+  isSelected: boolean;
+  isConnectionSource: boolean;
+  registerElement: (element: HTMLDivElement | null) => void;
+  onBeginConnection: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onChange: (presetId: ImageRulePresetId, rules: ImageRuleState) => void;
+}) {
+  const enabledCount = IMAGE_RULE_KEYS.filter((key) => node.rules[key]).length;
+  return (
+    <div
+      ref={registerElement}
+      className={`${isSelected ? "canvas-node rule-node is-selected" : "canvas-node rule-node"}${isConnectionSource ? " is-connection-source" : ""}`}
+      data-canvas-node-id={node.id}
+      style={{ width: node.width, height: node.height, transform: `translate3d(${node.x}px, ${node.y}px, 0)`, zIndex: node.zIndex }}
+    >
+      <header className="rule-node-header">
+        <span className="rule-node-icon"><SlidersHorizontal /></span>
+        <span><strong>{node.title}</strong><small>{enabledCount} 条规则已启用</small></span>
+      </header>
+      <div className="rule-node-content" data-canvas-control="true">
+        <label className="rule-preset-field">
+          <span>规则预设</span>
+          <select
+            value={node.presetId}
+            onChange={(event) => {
+              const preset = IMAGE_RULE_PRESETS.find((candidate) => candidate.id === event.currentTarget.value) ?? IMAGE_RULE_PRESETS[0];
+              onChange(preset.id, { ...preset.rules });
+            }}
+          >
+            {IMAGE_RULE_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+          </select>
+        </label>
+        <div className="rule-toggle-list">
+          {IMAGE_RULE_KEYS.map((key) => {
+            const definition = IMAGE_RULE_DEFINITIONS[key];
+            const enabled = node.rules[key] === true;
+            return (
+              <button
+                key={key}
+                className={enabled ? "rule-toggle is-enabled" : "rule-toggle"}
+                type="button"
+                role="switch"
+                aria-checked={enabled}
+                title={definition.description}
+                onClick={() => onChange(node.presetId, { ...node.rules, [key]: !enabled })}
+              >
+                <span>{definition.label}</span><i />
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <button
+        className="node-port output-port rule-output-port"
+        type="button"
+        data-canvas-control="true"
+        aria-pressed={isConnectionSource}
+        aria-label="拖拽连接规则到生图节点"
+        onPointerDown={onBeginConnection}
       >
         <span />
       </button>
@@ -487,79 +700,106 @@ function ImageCanvasNode({
 function GenerationCanvasNode({
   node,
   assetsById,
+  rulesById,
   isSelected,
+  isOptimizing,
   hasPendingConnection,
+  isConnectionTarget,
   registerElement,
   onAcceptConnection,
   onChange,
+  onOptimize,
   onRun,
   onDisconnectReference,
+  onDisconnectRule,
 }: {
   node: CanvasGenerationNode;
   assetsById: Map<string, CanvasAssetView>;
+  rulesById: Map<string, CanvasRuleNode>;
   isSelected: boolean;
+  isOptimizing: boolean;
   hasPendingConnection: boolean;
+  isConnectionTarget: boolean;
   registerElement: (element: HTMLDivElement | null) => void;
   onAcceptConnection: () => void;
   onChange: (update: GenerationNodeUpdate) => void;
+  onOptimize: () => void;
   onRun: () => void;
   onDisconnectReference: (assetId: string) => void;
+  onDisconnectRule: (ruleNodeId: string) => void;
 }) {
+  const modelPreset = getImageModelPreset(node.request.model.model);
   const resultViews = node.results
     .map((result) => assetsById.get(result.id))
     .filter((view): view is CanvasAssetView => Boolean(view));
   const referenceViews = node.request.inputAssetIds
     .map((assetId) => assetsById.get(assetId))
     .filter((view): view is CanvasAssetView => Boolean(view));
-  const statusLabel = node.status === "running"
-    ? "生成中"
-    : node.status === "success"
-      ? "完成"
-      : node.status === "error"
-        ? "失败"
-        : "待运行";
+  const connectedRules = (node.request.ruleNodeIds ?? [])
+    .map((ruleNodeId) => rulesById.get(ruleNodeId))
+    .filter((ruleNode): ruleNode is CanvasRuleNode => Boolean(ruleNode));
+  const statusLabel = node.status === "running" ? "生成中" : node.status === "success" ? "完成" : node.status === "error" ? "失败" : "待运行";
 
   return (
     <div
       ref={registerElement}
       className={`${isSelected ? "canvas-node generation-node is-selected" : "canvas-node generation-node"} is-${node.status}`}
       data-canvas-node-id={node.id}
-      style={{
-        width: node.width,
-        height: node.height,
-        transform: `translate3d(${node.x}px, ${node.y}px, 0)`,
-        zIndex: node.zIndex,
-      }}
+      data-generation-target-node-id={node.id}
+      style={{ width: node.width, height: node.height, transform: `translate3d(${node.x}px, ${node.y}px, 0)`, zIndex: node.zIndex }}
     >
       <header className="generation-node-header">
         <span className="generation-node-icon"><MagicWand weight="fill" /></span>
-        <span><strong>{node.title}</strong><small>{referenceViews.length} 张参考图</small></span>
+        <span><strong>{node.title}</strong><small>{modelPreset.name} · {referenceViews.length} 参考 · {connectedRules.length} 规则</small></span>
         <span className={`node-status is-${node.status}`}>{statusLabel}</span>
       </header>
 
       <button
-        className={hasPendingConnection ? "node-port input-port is-ready" : "node-port input-port"}
+        className={`${hasPendingConnection ? "node-port input-port is-ready" : "node-port input-port"}${isConnectionTarget ? " is-targeted" : ""}`}
         type="button"
         data-canvas-control="true"
-        aria-label="接收参考图片连接"
+        data-generation-input-node-id={node.id}
+        aria-label="接收图片或规则节点连接"
         onClick={onAcceptConnection}
       >
         <span />
       </button>
 
       <div className="generation-node-content" data-canvas-control="true">
-        <div className="reference-strip">
-          <span className="field-label">参考图</span>
-          <div className="reference-items">
-            {referenceViews.length ? referenceViews.map(({ asset, displayUri }) => (
+        <div className="model-preset-switcher" aria-label="生图模型">
+          {IMAGE_MODEL_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              className={preset.id === modelPreset.id ? "is-active" : ""}
+              type="button"
+              title={preset.description}
+              onClick={() => onChange({
+                model: { provider: "server-gateway", model: preset.id },
+                resolution: preset.resolutions.includes(node.request.resolution) ? node.request.resolution : preset.defaultResolution,
+              })}
+            >
+              <span>{preset.shortName}</span><small>{preset.defaultResolution.toUpperCase()}</small>
+            </button>
+          ))}
+        </div>
+
+        <div className="node-inputs-strip">
+          <span className="field-label">输入</span>
+          <div className="node-input-items">
+            {referenceViews.map(({ asset, displayUri }) => (
               <span className="reference-thumb" key={asset.id}>
                 <img src={displayUri} alt={asset.name} />
-                <button type="button" onClick={() => onDisconnectReference(asset.id)} aria-label={`移除参考图 ${asset.name}`}>
-                  <X />
-                </button>
+                <button type="button" onClick={() => onDisconnectReference(asset.id)} aria-label={`移除参考图 ${asset.name}`}><X /></button>
               </span>
-            )) : (
-              <span className="reference-empty"><Link />从图片节点连接参考素材</span>
+            ))}
+            {connectedRules.map((ruleNode) => (
+              <span className="connected-rule-chip" key={ruleNode.id}>
+                <SlidersHorizontal /><span>{ruleNode.title}</span>
+                <button type="button" onClick={() => onDisconnectRule(ruleNode.id)} aria-label={`断开规则 ${ruleNode.title}`}><X /></button>
+              </span>
+            ))}
+            {!referenceViews.length && !connectedRules.length && (
+              <span className="reference-empty"><Link />拖入图片或规则节点</span>
             )}
           </div>
         </div>
@@ -576,12 +816,18 @@ function GenerationCanvasNode({
           ) : node.status === "error" ? (
             <div className="generation-preview-state is-error"><span>!</span><strong>生成失败</strong><small>{node.error}</small></div>
           ) : (
-            <div className="generation-preview-state"><MagicWand /><strong>生成结果</strong><small>填写描述后运行当前节点</small></div>
+            <div className="generation-preview-state"><MagicWand /><strong>生成结果</strong><small>选择模型、连接素材并运行当前节点</small></div>
           )}
         </div>
 
         <label className="node-prompt-field">
-          <span className="field-label">描述产品设计任务</span>
+          <span className="prompt-field-heading">
+            <span className="field-label">描述产品设计任务</span>
+            <button type="button" className="prompt-optimize-action" onClick={onOptimize} disabled={isOptimizing || !node.request.prompt.trim()}>
+              {isOptimizing ? <span className="button-spinner" /> : <MagicWand />}
+              {isOptimizing ? "优化中" : "优化提示词"}
+            </button>
+          </span>
           <textarea
             value={node.request.prompt}
             placeholder="例如：便携式桌面投影仪，圆润一体化机身，磨砂铝与暖灰织物 CMF，工作室产品摄影……"
@@ -593,27 +839,19 @@ function GenerationCanvasNode({
           <label>
             <span>比例</span>
             <select value={node.request.aspectRatio} onChange={(event) => onChange({ aspectRatio: event.currentTarget.value as ImageGenerationRequest["aspectRatio"] })}>
-              <option value="1:1">1:1</option>
-              <option value="4:3">4:3</option>
-              <option value="3:4">3:4</option>
-              <option value="16:9">16:9</option>
-              <option value="9:16">9:16</option>
+              <option value="1:1">1:1</option><option value="4:3">4:3</option><option value="3:4">3:4</option><option value="16:9">16:9</option><option value="9:16">9:16</option>
             </select>
           </label>
           <label>
             <span>清晰度</span>
             <select value={node.request.resolution} onChange={(event) => onChange({ resolution: event.currentTarget.value as ImageGenerationRequest["resolution"] })}>
-              <option value="1k">1K</option>
-              <option value="2k">2K</option>
-              <option value="4k">4K</option>
+              {modelPreset.resolutions.map((resolution) => <option key={resolution} value={resolution}>{resolution.toUpperCase()}</option>)}
             </select>
           </label>
           <label>
             <span>张数</span>
             <select value={node.request.count} onChange={(event) => onChange({ count: Number(event.currentTarget.value) })}>
-              <option value={1}>1</option>
-              <option value={2}>2</option>
-              <option value={4}>4</option>
+              <option value={1}>1</option><option value={2}>2</option><option value={4}>4</option>
             </select>
           </label>
           <button className="node-run-action" type="button" onClick={onRun} disabled={node.status === "running" || !node.request.prompt.trim()}>
@@ -627,25 +865,49 @@ function GenerationCanvasNode({
 }
 
 function collectConnections(nodes: CanvasNode[]) {
-  const imageNodes = nodes.filter((node): node is Extract<CanvasNode, { type: "image" }> => node.type === "image");
+  const sourceNodes = nodes.filter((node): node is Extract<CanvasNode, { type: "image" | "rule" }> => node.type === "image" || node.type === "rule");
   const connections: Array<{
-    source: Extract<CanvasNode, { type: "image" }>;
+    source: Extract<CanvasNode, { type: "image" | "rule" }>;
     target: CanvasGenerationNode;
     key: string;
+    kind: "image" | "rule";
   }> = [];
-
   for (const target of nodes) {
     if (target.type !== "generation") {
       continue;
     }
     target.request.inputAssetIds.forEach((assetId) => {
-      const source = imageNodes.find((node) => node.assetId === assetId);
-      if (source) {
-        connections.push({ source, target, key: `${source.id}-${target.id}` });
-      }
+      const source = sourceNodes.find((node) => node.type === "image" && node.assetId === assetId);
+      if (source) connections.push({ source, target, key: `${source.id}-${target.id}-image`, kind: "image" });
+    });
+    (target.request.ruleNodeIds ?? []).forEach((ruleNodeId) => {
+      const source = sourceNodes.find((node) => node.type === "rule" && node.id === ruleNodeId);
+      if (source) connections.push({ source, target, key: `${source.id}-${target.id}-rule`, kind: "rule" });
     });
   }
   return connections;
+}
+
+function findGenerationTargetAtPoint(clientX: number, clientY: number): string | undefined {
+  for (const element of document.elementsFromPoint(clientX, clientY)) {
+    const inputTarget = element.closest<HTMLElement>("[data-generation-input-node-id]");
+    if (inputTarget?.dataset.generationInputNodeId) {
+      return inputTarget.dataset.generationInputNodeId;
+    }
+    const nodeTarget = element.closest<HTMLElement>("[data-generation-target-node-id]");
+    if (nodeTarget?.dataset.generationTargetNodeId) {
+      return nodeTarget.dataset.generationTargetNodeId;
+    }
+  }
+  return undefined;
+}
+
+function getOutputPoint(node: Extract<CanvasNode, { type: "image" | "rule" }>): CanvasPoint {
+  return { x: node.x + node.width + 8, y: node.y + node.height / 2 };
+}
+
+function getInputPoint(node: CanvasGenerationNode): CanvasPoint {
+  return { x: node.x - 8, y: node.y + 76 };
 }
 
 function createConnectionPath(start: CanvasPoint, end: CanvasPoint): string {
@@ -653,16 +915,9 @@ function createConnectionPath(start: CanvasPoint, end: CanvasPoint): string {
   return `M ${start.x} ${start.y} C ${start.x + distance} ${start.y}, ${end.x - distance} ${end.y}, ${end.x} ${end.y}`;
 }
 
-function registerNodeElement(
-  nodeId: string,
-  element: HTMLDivElement | null,
-  elements: Map<string, HTMLDivElement>,
-) {
-  if (element) {
-    elements.set(nodeId, element);
-  } else {
-    elements.delete(nodeId);
-  }
+function registerNodeElement(nodeId: string, element: HTMLDivElement | null, elements: Map<string, HTMLDivElement>) {
+  if (element) elements.set(nodeId, element);
+  else elements.delete(nodeId);
 }
 
 function getDistance(first: CanvasPoint, second: CanvasPoint): number {

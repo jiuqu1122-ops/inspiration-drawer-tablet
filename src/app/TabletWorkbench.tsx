@@ -5,10 +5,19 @@ import type {
   CanvasNode,
   CanvasPoint,
   CanvasProject,
+  CanvasRuleNode,
   CanvasViewport,
   GeneratedImageResult,
   ImageAsset,
   ImageGenerationRequest,
+  ImageRulePresetId,
+  ImageRuleState,
+} from "../../shared";
+import {
+  getImageModelPreset,
+  IMAGE_RULE_PRESETS,
+  isImageModelPresetId,
+  mergeImageRuleStates,
 } from "../../shared";
 import { CanvasToolDock } from "../components/CanvasToolDock";
 import { ResourceRail, type ResourceSection } from "../components/ResourceRail";
@@ -26,8 +35,8 @@ import { createId } from "../utils/id";
 const DEFAULT_PROJECT_ID = "tablet-local-project";
 const DEFAULT_VIEWPORT: CanvasViewport = { x: 0, y: 0, scale: 1 };
 const MANAGED_IMAGE_MODEL = {
-  provider: "openai-compatible" as const,
-  model: "managed-image",
+  provider: "server-gateway" as const,
+  model: "nano-banana-pro",
 };
 
 interface WorkbenchNotice {
@@ -44,8 +53,14 @@ export function TabletWorkbench() {
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
   const [notice, setNotice] = useState<WorkbenchNotice>();
   const [isImporting, setIsImporting] = useState(false);
+  const [optimizingNodeIds, setOptimizingNodeIds] = useState<Set<string>>(() => new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hydratedRef = useRef(false);
+  const nodesRef = useRef<CanvasNode[]>([]);
+
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
 
   useEffect(() => {
     let cancelled = false;
@@ -203,7 +218,7 @@ export function TabletWorkbench() {
       inputAssetIds: [],
       model: MANAGED_IMAGE_MODEL,
       aspectRatio: "1:1",
-      resolution: "1k",
+      resolution: "2k",
       count: 4,
       createdAt: Date.now(),
     };
@@ -217,12 +232,76 @@ export function TabletWorkbench() {
     setNotice({ tone: "neutral", message: "已创建生图节点，在节点内描述设计任务即可运行" });
   };
 
+  const addRuleNode = () => {
+    const center = getViewportCenter(viewport);
+    const preset = IMAGE_RULE_PRESETS[0];
+    const node = createRuleNode(preset.id, preset.name, preset.rules, nodes.length, {
+      x: center.x - 410,
+      y: center.y - 190,
+    });
+    setNodes((current) => [...current, node]);
+    setSelectedNodeId(node.id);
+    setIsResourceDrawerOpen(false);
+    setNotice({ tone: "neutral", message: "已创建规则节点，从右侧输出点拖到生图节点即可应用" });
+  };
+
   const updateGenerationNode = (nodeId: string, update: GenerationNodeUpdate) => {
     setNodes((current) => current.map((node) =>
       node.id === nodeId && node.type === "generation"
         ? { ...node, request: { ...node.request, ...update } }
         : node,
     ));
+  };
+
+  const updateRuleNode = (
+    nodeId: string,
+    presetId: ImageRulePresetId,
+    rules: ImageRuleState,
+  ) => {
+    const preset = IMAGE_RULE_PRESETS.find((candidate) => candidate.id === presetId);
+    setNodes((current) => current.map((node) =>
+      node.id === nodeId && node.type === "rule"
+        ? { ...node, presetId, title: preset?.name ?? node.title, rules }
+        : node,
+    ));
+  };
+
+  const optimizeGenerationPrompt = async (nodeId: string) => {
+    const sourceNode = nodes.find((node): node is CanvasGenerationNode => node.id === nodeId && node.type === "generation");
+    const originalPrompt = sourceNode?.request.prompt.trim() ?? "";
+    if (!sourceNode || !originalPrompt) {
+      setNotice({ tone: "error", message: "请先输入需要优化的提示词" });
+      return;
+    }
+    setOptimizingNodeIds((current) => new Set(current).add(nodeId));
+    setNotice({ tone: "neutral", message: "正在按工业设计任务优化提示词" });
+    try {
+      const optimizedPrompt = await new TauriImageGenerationService().optimizePrompt(originalPrompt);
+      if (!optimizedPrompt.trim()) {
+        throw new Error("服务端没有返回可用的优化结果");
+      }
+      const currentNode = nodesRef.current.find(
+        (node): node is CanvasGenerationNode => node.id === nodeId && node.type === "generation",
+      );
+      if (!currentNode || currentNode.request.prompt.trim() !== originalPrompt) {
+        setNotice({ tone: "neutral", message: "提示词已被修改，未覆盖当前内容" });
+      } else {
+        setNodes((current) => current.map((node) => (
+          node.id === nodeId && node.type === "generation"
+            ? { ...node, request: { ...node.request, prompt: optimizedPrompt.trim() } }
+            : node
+        )));
+        setNotice({ tone: "success", message: "提示词已优化" });
+      }
+    } catch (error) {
+      setNotice({ tone: "error", message: getErrorMessage(error, "提示词优化失败") });
+    } finally {
+      setOptimizingNodeIds((current) => {
+        const next = new Set(current);
+        next.delete(nodeId);
+        return next;
+      });
+    }
   };
 
   const runGenerationNode = async (nodeId: string) => {
@@ -252,10 +331,13 @@ export function TabletWorkbench() {
 
     try {
       const inputAssets = request.inputAssetIds
-        .map((assetId) => assets.find((entry) => entry.asset.id === assetId)?.asset)
+        .map((assetId) => assets.find((entry) => entry.asset.id === assetId))
+        .map((entry) => entry ? { ...entry.asset, uri: entry.displayUri } : undefined)
         .filter((asset): asset is ImageAsset => Boolean(asset));
+      const rules = mergeImageRuleStates(...(request.ruleNodeIds ?? [])
+        .map((ruleNodeId) => nodes.find((node): node is CanvasRuleNode => node.id === ruleNodeId && node.type === "rule")?.rules));
       const service = new TauriImageGenerationService();
-      const results = await service.generate(request, { inputAssets });
+      const results = await service.generate(request, { inputAssets, rules });
       const savedEntries = await Promise.all(results.map(async (result, index) => {
         const asset = await tabletStorage.saveGeneratedImage(
           createGeneratedAsset(result, request, index),
@@ -294,24 +376,29 @@ export function TabletWorkbench() {
   };
 
   const connectNodes = (sourceNodeId: string, targetNodeId: string) => {
-    const source = nodes.find((node): node is CanvasImageNode => node.id === sourceNodeId && node.type === "image");
-    if (!source) {
+    const source = nodes.find((node) => node.id === sourceNodeId);
+    if (!source || source.type === "generation") {
       return;
     }
     setNodes((current) => current.map((node) => {
-      if (node.id !== targetNodeId || node.type !== "generation" || node.request.inputAssetIds.includes(source.assetId)) {
+      if (node.id !== targetNodeId || node.type !== "generation") {
         return node;
       }
+      if (source.type === "image") {
+        if (node.request.inputAssetIds.includes(source.assetId)) return node;
+        return {
+          ...node,
+          request: { ...node.request, inputAssetIds: [...node.request.inputAssetIds, source.assetId] },
+        };
+      }
+      if ((node.request.ruleNodeIds ?? []).includes(source.id)) return node;
       return {
         ...node,
-        request: {
-          ...node.request,
-          inputAssetIds: [...node.request.inputAssetIds, source.assetId],
-        },
+        request: { ...node.request, ruleNodeIds: [...(node.request.ruleNodeIds ?? []), source.id] },
       };
     }));
     setSelectedNodeId(targetNodeId);
-    setNotice({ tone: "success", message: "参考图片已连接到生图节点" });
+    setNotice({ tone: "success", message: source.type === "image" ? "参考图片已连接到生图节点" : "图像规则已连接到生图节点" });
   };
 
   const disconnectReference = (targetNodeId: string, assetId: string) => {
@@ -328,20 +415,29 @@ export function TabletWorkbench() {
     ));
   };
 
+  const disconnectRule = (targetNodeId: string, ruleNodeId: string) => {
+    setNodes((current) => current.map((node) =>
+      node.id === targetNodeId && node.type === "generation"
+        ? { ...node, request: { ...node.request, ruleNodeIds: (node.request.ruleNodeIds ?? []).filter((candidate) => candidate !== ruleNodeId) } }
+        : node,
+    ));
+  };
+
   const removeNode = (nodeId: string) => {
     setNodes((current) => {
       const removed = current.find((node) => node.id === nodeId);
       return current
         .filter((node) => node.id !== nodeId)
-        .map((node) => removed?.type === "image" && node.type === "generation"
-          ? {
-              ...node,
-              request: {
-                ...node.request,
-                inputAssetIds: node.request.inputAssetIds.filter((assetId) => assetId !== removed.assetId),
-              },
-            }
-          : node);
+        .map((node) => {
+          if (node.type !== "generation") return node;
+          if (removed?.type === "image") {
+            return { ...node, request: { ...node.request, inputAssetIds: node.request.inputAssetIds.filter((assetId) => assetId !== removed.assetId) } };
+          }
+          if (removed?.type === "rule") {
+            return { ...node, request: { ...node.request, ruleNodeIds: (node.request.ruleNodeIds ?? []).filter((ruleNodeId) => ruleNodeId !== removed.id) } };
+          }
+          return node;
+        });
     });
     setSelectedNodeId(undefined);
   };
@@ -357,6 +453,7 @@ export function TabletWorkbench() {
 
   const arrangeCanvas = () => {
     let imageIndex = 0;
+    let ruleIndex = 0;
     let generationIndex = 0;
     setNodes((current) => current.map((node) => {
       if (node.type === "image") {
@@ -366,6 +463,15 @@ export function TabletWorkbench() {
           x: 96 + (index % 2) * 380,
           y: 96 + Math.floor(index / 2) * 330,
           zIndex: index + 1,
+        };
+      }
+      if (node.type === "rule") {
+        const index = ruleIndex++;
+        return {
+          ...node,
+          x: 560 + (index % 2) * 330,
+          y: 96 + Math.floor(index / 2) * 370,
+          zIndex: imageIndex + index + 10,
         };
       }
       const index = generationIndex++;
@@ -404,7 +510,8 @@ export function TabletWorkbench() {
           nodes={nodes}
           assets={assets}
           viewport={viewport}
-          selectedNodeId={selectedNodeId}
+        selectedNodeId={selectedNodeId}
+          optimizingNodeIds={optimizingNodeIds}
           onImportRequest={requestImageImport}
           onGenerateRequest={addGenerationNode}
           onViewportChange={setViewport}
@@ -416,9 +523,12 @@ export function TabletWorkbench() {
           onNodeRemove={removeNode}
           onSelectNode={setSelectedNodeId}
           onGenerationChange={updateGenerationNode}
+          onRuleNodeChange={updateRuleNode}
+          onOptimizePrompt={(nodeId) => void optimizeGenerationPrompt(nodeId)}
           onRunGeneration={(nodeId) => void runGenerationNode(nodeId)}
           onConnect={connectNodes}
           onDisconnectReference={disconnectReference}
+          onDisconnectRule={disconnectRule}
         />
       </section>
 
@@ -436,6 +546,7 @@ export function TabletWorkbench() {
         canRun={canRunGeneration}
         onImport={requestImageImport}
         onAddGeneration={addGenerationNode}
+        onAddRules={addRuleNode}
         onRun={runSelectedGeneration}
         onArrange={arrangeCanvas}
         onWorkflow={() => setNotice({ tone: "neutral", message: "工作流将在节点基础能力完成后接入" })}
@@ -481,7 +592,29 @@ function createGenerationNode(
     x: point.x,
     y: point.y,
     width: 372,
-    height: 506,
+    height: 574,
+    zIndex: index + 1,
+    createdAt: Date.now(),
+  };
+}
+
+function createRuleNode(
+  presetId: ImageRulePresetId,
+  title: string,
+  rules: ImageRuleState,
+  index: number,
+  point: CanvasPoint,
+): CanvasRuleNode {
+  return {
+    id: createId("canvas-rule"),
+    type: "rule",
+    title,
+    presetId,
+    rules: { ...rules },
+    x: point.x,
+    y: point.y,
+    width: 292,
+    height: 342,
     zIndex: index + 1,
     createdAt: Date.now(),
   };
@@ -491,11 +624,24 @@ function normalizeStoredNode(node: CanvasNode): CanvasNode {
   if (node.type === "image") {
     return node;
   }
+  if (node.type === "rule") {
+    return { ...node, width: 292, height: 342 };
+  }
+  const modelId = isImageModelPresetId(node.request.model.model)
+    ? node.request.model.model
+    : "nano-banana-pro";
+  const preset = getImageModelPreset(modelId);
   return {
     ...node,
     width: 372,
-    height: 506,
+    height: 574,
     status: node.status === "running" ? "idle" : node.status,
+    request: {
+      ...node.request,
+      model: { provider: "server-gateway", model: preset.id },
+      resolution: preset.resolutions.includes(node.request.resolution) ? node.request.resolution : preset.defaultResolution,
+      ruleNodeIds: node.request.ruleNodeIds ?? [],
+    },
   };
 }
 
