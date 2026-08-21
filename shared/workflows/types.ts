@@ -31,6 +31,7 @@ export interface CanvasNodePresetDefinition {
 export interface CanvasTemplateLibraryData {
   workflows: WorkflowDefinition[];
   nodePresets: CanvasNodePresetDefinition[];
+  hiddenWorkflowPresetIds?: string[];
 }
 
 export type WorkflowNodeDefinition = WorkflowTextNodeDefinition | WorkflowImageNodeDefinition;

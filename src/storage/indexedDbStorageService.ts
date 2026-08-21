@@ -126,6 +126,9 @@ export class IndexedDbStorageService implements StorageService {
     return {
       workflows: Array.isArray(stored?.workflows) ? stored.workflows : [],
       nodePresets: Array.isArray(stored?.nodePresets) ? stored.nodePresets : [],
+      hiddenWorkflowPresetIds: Array.isArray(stored?.hiddenWorkflowPresetIds)
+        ? stored.hiddenWorkflowPresetIds
+        : [],
     };
   }
 
@@ -134,6 +137,7 @@ export class IndexedDbStorageService implements StorageService {
       id: TEMPLATE_LIBRARY_ID,
       workflows: library.workflows,
       nodePresets: library.nodePresets,
+      hiddenWorkflowPresetIds: library.hiddenWorkflowPresetIds ?? [],
     } satisfies StoredTemplateLibrary);
   }
 

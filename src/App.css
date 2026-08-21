@@ -2831,7 +2831,7 @@ select:focus-visible {
   background: var(--canvas);
 }
 
-.workflow-library-list article > div {
+.workflow-library-list article > .workflow-template-info {
   min-width: 0;
   flex: 1;
 }
@@ -2862,7 +2862,13 @@ select:focus-visible {
   height: 11px;
 }
 
-.workflow-library-list article > button {
+.workflow-template-actions {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.workflow-template-actions > button {
   display: inline-flex;
   min-height: 40px;
   padding: 0 12px;
@@ -2876,9 +2882,16 @@ select:focus-visible {
   font-weight: 700;
 }
 
-.workflow-library-list article > button svg {
+.workflow-template-actions > button svg {
   width: 13px;
   height: 13px;
+}
+
+.workflow-template-actions > .workflow-template-remove {
+  min-height: 36px;
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--line));
+  color: var(--danger);
+  background: transparent;
 }
 
 :root[data-theme="dark"] .text-node {
@@ -2892,7 +2905,7 @@ select:focus-visible {
 }
 
 :root[data-theme="dark"] .text-node-run-action,
-:root[data-theme="dark"] .workflow-library-list article > button {
+:root[data-theme="dark"] .workflow-template-actions > .workflow-template-add {
   border-color: #e8e5df;
   color: #181916;
   background: #e8e5df;

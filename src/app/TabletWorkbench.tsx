@@ -77,6 +77,7 @@ export function TabletWorkbench() {
   const [isTemplateImporting, setIsTemplateImporting] = useState(false);
   const [customWorkflows, setCustomWorkflows] = useState<WorkflowDefinition[]>([]);
   const [nodePresets, setNodePresets] = useState<CanvasNodePresetDefinition[]>([]);
+  const [hiddenWorkflowPresetIds, setHiddenWorkflowPresetIds] = useState<string[]>([]);
   const [serverSession, setServerSession] = useState<ServerSession>({ authenticated: false });
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
   const [systemDarkMode, setSystemDarkMode] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
@@ -177,6 +178,7 @@ export function TabletWorkbench() {
         setProjects(project ? projects : [initialProject]);
         setCustomWorkflows(templateLibrary.workflows);
         setNodePresets(templateLibrary.nodePresets);
+        setHiddenWorkflowPresetIds(templateLibrary.hiddenWorkflowPresetIds ?? []);
         setActiveProjectId(initialProject.id);
         setNodes(initialProject.nodes.map(normalizeStoredNode));
         setViewport(initialProject.viewport);
@@ -525,6 +527,7 @@ export function TabletWorkbench() {
       await tabletStorage.saveCanvasTemplateLibrary({
         workflows: nextWorkflows,
         nodePresets: nextPresets,
+        hiddenWorkflowPresetIds,
       });
       setCustomWorkflows(nextWorkflows);
       setNodePresets(nextPresets);
@@ -540,6 +543,45 @@ export function TabletWorkbench() {
       setNotice({ tone: "error", message: getErrorMessage(error, "JSON 模板导入失败") });
     } finally {
       setIsTemplateImporting(false);
+    }
+  };
+
+  const removeWorkflowTemplate = async (workflow: WorkflowDefinition) => {
+    if (!window.confirm(`删除工作流“${workflow.name}”？已添加到画布的节点不会受影响。`)) return;
+    const isBuiltIn = TABLET_WORKFLOW_PRESETS.some((preset) => preset.id === workflow.id);
+    const nextWorkflows = isBuiltIn
+      ? customWorkflows
+      : customWorkflows.filter((candidate) => candidate.id !== workflow.id);
+    const nextHiddenIds = isBuiltIn
+      ? [...new Set([...hiddenWorkflowPresetIds, workflow.id])]
+      : hiddenWorkflowPresetIds;
+    try {
+      await tabletStorage.saveCanvasTemplateLibrary({
+        workflows: nextWorkflows,
+        nodePresets,
+        hiddenWorkflowPresetIds: nextHiddenIds,
+      });
+      setCustomWorkflows(nextWorkflows);
+      setHiddenWorkflowPresetIds(nextHiddenIds);
+      setNotice({ tone: "success", message: `已从模板库删除工作流“${workflow.name}”` });
+    } catch (error) {
+      setNotice({ tone: "error", message: getErrorMessage(error, "删除工作流失败") });
+    }
+  };
+
+  const removeNodePresetTemplate = async (preset: CanvasNodePresetDefinition) => {
+    if (!window.confirm(`删除节点预设“${preset.name}”？已添加到画布的节点不会受影响。`)) return;
+    const nextPresets = nodePresets.filter((candidate) => candidate.id !== preset.id);
+    try {
+      await tabletStorage.saveCanvasTemplateLibrary({
+        workflows: customWorkflows,
+        nodePresets: nextPresets,
+        hiddenWorkflowPresetIds,
+      });
+      setNodePresets(nextPresets);
+      setNotice({ tone: "success", message: `已删除节点预设“${preset.name}”` });
+    } catch (error) {
+      setNotice({ tone: "error", message: getErrorMessage(error, "删除节点预设失败") });
     }
   };
 
@@ -1030,12 +1072,17 @@ export function TabletWorkbench() {
 
       <WorkflowLibrary
         open={isWorkflowLibraryOpen}
-        workflows={[...TABLET_WORKFLOW_PRESETS, ...customWorkflows]}
+        workflows={[
+          ...TABLET_WORKFLOW_PRESETS.filter((workflow) => !hiddenWorkflowPresetIds.includes(workflow.id)),
+          ...customWorkflows,
+        ]}
         nodePresets={nodePresets}
         importing={isTemplateImporting}
         onClose={() => setIsWorkflowLibraryOpen(false)}
         onAddWorkflow={addWorkflowToCanvas}
         onAddNodePreset={addNodePresetToCanvas}
+        onRemoveWorkflow={(workflow) => void removeWorkflowTemplate(workflow)}
+        onRemoveNodePreset={(preset) => void removeNodePresetTemplate(preset)}
         onImport={(files) => void importCanvasTemplates(files)}
       />
 

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { FileArrowUp, FlowArrow, MagicWand, Plus, TextT, X } from "@phosphor-icons/react";
+import { FileArrowUp, FlowArrow, MagicWand, Plus, TextT, Trash, X } from "@phosphor-icons/react";
 import type { CanvasNodePresetDefinition, WorkflowDefinition } from "../../../shared";
 
 interface WorkflowLibraryProps {
@@ -10,6 +10,8 @@ interface WorkflowLibraryProps {
   onClose: () => void;
   onAddWorkflow: (workflow: WorkflowDefinition) => void;
   onAddNodePreset: (preset: CanvasNodePresetDefinition) => void;
+  onRemoveWorkflow: (workflow: WorkflowDefinition) => void;
+  onRemoveNodePreset: (preset: CanvasNodePresetDefinition) => void;
   onImport: (files: FileList | null) => void;
 }
 
@@ -23,6 +25,8 @@ export function WorkflowLibrary({
   onClose,
   onAddWorkflow,
   onAddNodePreset,
+  onRemoveWorkflow,
+  onRemoveNodePreset,
   onImport,
 }: WorkflowLibraryProps) {
   const [activeTab, setActiveTab] = useState<LibraryTab>("workflows");
@@ -86,13 +90,16 @@ export function WorkflowLibrary({
               const imageCount = workflow.nodes.length - textCount;
               return (
                 <article key={workflow.id}>
-                  <div>
+                  <div className="workflow-template-info">
                     <strong>{workflow.name}</strong>
                     <p>{workflow.description}</p>
                     <span><TextT />{textCount} 文字 LLM</span>
                     <span><MagicWand />{imageCount} 生图</span>
                   </div>
-                  <button type="button" onClick={() => onAddWorkflow(workflow)}><Plus />添加到画布</button>
+                  <div className="workflow-template-actions">
+                    <button className="workflow-template-add" type="button" onClick={() => onAddWorkflow(workflow)}><Plus />添加到画布</button>
+                    <button className="workflow-template-remove" type="button" onClick={() => onRemoveWorkflow(workflow)} aria-label={`删除工作流 ${workflow.name}`}><Trash />删除</button>
+                  </div>
                 </article>
               );
             })}
@@ -101,14 +108,17 @@ export function WorkflowLibrary({
           <div className="workflow-library-list node-preset-list">
             {nodePresets.length > 0 ? nodePresets.map((preset) => (
               <article key={preset.id}>
-                <div>
+                <div className="workflow-template-info">
                   <strong>{preset.name}</strong>
                   <p>{preset.description}</p>
                   <span>{preset.aspectRatio}</span>
                   <span>{preset.resolution.toUpperCase()}</span>
                   <span>{preset.count} 张</span>
                 </div>
-                <button type="button" onClick={() => onAddNodePreset(preset)}><Plus />添加节点</button>
+                <div className="workflow-template-actions">
+                  <button className="workflow-template-add" type="button" onClick={() => onAddNodePreset(preset)}><Plus />添加节点</button>
+                  <button className="workflow-template-remove" type="button" onClick={() => onRemoveNodePreset(preset)} aria-label={`删除节点预设 ${preset.name}`}><Trash />删除</button>
+                </div>
               </article>
             )) : (
               <div className="workflow-library-empty">
