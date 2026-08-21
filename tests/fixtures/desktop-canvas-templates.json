@@ -1,0 +1,61 @@
+{
+  "type": "inspiration-drawer-canvas-templates",
+  "version": 1,
+  "presets": [
+    {
+      "id": "tablet-import-fixture-preset",
+      "label": "便携音箱棚拍",
+      "hint": "桌面节点预设兼容性测试",
+      "prompt": "保持参考产品结构不变，生成克制的工业设计棚拍图。",
+      "aspectRatio": "4:3",
+      "resolution": "4K",
+      "count": 2
+    }
+  ],
+  "workflows": [
+    {
+      "id": "tablet-import-fixture-workflow",
+      "label": "桌面工作流兼容性测试",
+      "hint": "文字 LLM 分析后生成产品图",
+      "nodes": [
+        {
+          "id": "reference-input",
+          "x": 0,
+          "y": 0,
+          "item": { "id": "reference-input", "type": "image", "content": "", "name": "产品参考图" },
+          "inputs": [],
+          "fixedInput": true,
+          "acceptsExternalInputs": true,
+          "externalInputTypes": ["image"],
+          "outputType": "image[]"
+        },
+        {
+          "id": "design-analysis",
+          "x": 420,
+          "y": 0,
+          "item": { "id": "design-analysis", "type": "text", "content": "分析产品形态、CMF 和使用场景，输出生图提示词。", "name": "设计分析" },
+          "inputs": ["reference-input"],
+          "textMode": "agent",
+          "designAgentConfig": { "agentRole": "design_strategist" },
+          "outputType": "text"
+        },
+        {
+          "id": "concept-render",
+          "x": 860,
+          "y": 0,
+          "item": { "id": "concept-render", "type": "text", "content": "", "name": "概念渲染" },
+          "inputs": ["reference-input", "design-analysis"],
+          "outputType": "image",
+          "ai": {
+            "type": "image-generator",
+            "presetLabel": "概念渲染",
+            "presetPrompt": "根据上游设计分析生成高级工业设计概念渲染。",
+            "aspectRatio": "16:9",
+            "resolution": "2K",
+            "count": 1
+          }
+        }
+      ]
+    }
+  ]
+}

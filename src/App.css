@@ -2570,6 +2570,27 @@ select:focus-visible {
   background: var(--canvas);
 }
 
+.workflow-library > header > .workflow-library-import {
+  display: inline-flex;
+  width: auto;
+  min-width: 112px;
+  margin-left: auto;
+  padding: 0 13px;
+  gap: 6px;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.workflow-library > header > .workflow-library-import:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.workflow-library > header > .workflow-library-import + button {
+  margin-left: 0;
+}
+
 .workflow-library-intro {
   margin: 0;
   padding: 11px 18px;
@@ -2578,13 +2599,92 @@ select:focus-visible {
   font-size: 10px;
 }
 
+.workflow-library-tabs {
+  display: flex;
+  min-height: 48px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+  gap: 7px;
+}
+
+.workflow-library-tabs button {
+  display: inline-flex;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.workflow-library-tabs button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.workflow-library-tabs button span {
+  display: grid;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border-radius: 10px;
+  place-items: center;
+  color: var(--muted);
+  background: var(--canvas);
+  font-size: 8px;
+}
+
+.workflow-library-tabs button.is-active {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--canvas);
+}
+
 .workflow-library-list {
   display: grid;
-  max-height: calc(min(720px, 100dvh - var(--app-top) - 40px) - 116px);
+  max-height: calc(min(720px, 100dvh - var(--app-top) - 40px) - 164px);
   overflow: auto;
   padding: 14px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.node-preset-list article {
+  min-height: 108px;
+}
+
+.workflow-library-empty {
+  display: grid;
+  min-height: 260px;
+  grid-column: 1 / -1;
+  place-content: center;
+  justify-items: center;
+  color: var(--muted);
+  text-align: center;
+}
+
+.workflow-library-empty > svg {
+  width: 34px;
+  height: 34px;
+  margin-bottom: 12px;
+  color: var(--accent-strong);
+}
+
+.workflow-library-empty strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.workflow-library-empty p {
+  max-width: 310px;
+  margin: 7px 0 0;
+  font-size: 9px;
+  line-height: 1.5;
 }
 
 .workflow-library-list article {

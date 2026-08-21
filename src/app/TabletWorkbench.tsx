@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  CanvasNodePresetDefinition,
   CanvasGenerationNode,
   CanvasImageNode,
   CanvasNode,
@@ -18,9 +19,11 @@ import type {
 import {
   getImageModelPreset,
   IMAGE_RULE_PRESETS,
+  parseCanvasTemplateJson,
   isImageModelPresetId,
   mergeImageRuleStates,
   normalizeImageAspectRatio,
+  TABLET_WORKFLOW_PRESETS,
 } from "../../shared";
 import { CanvasToolDock } from "../components/CanvasToolDock";
 import { AccountDialog } from "../components/AccountDialog";
@@ -71,6 +74,9 @@ export function TabletWorkbench() {
   const [isImporting, setIsImporting] = useState(false);
   const [isAccountDialogOpen, setIsAccountDialogOpen] = useState(false);
   const [isWorkflowLibraryOpen, setIsWorkflowLibraryOpen] = useState(false);
+  const [isTemplateImporting, setIsTemplateImporting] = useState(false);
+  const [customWorkflows, setCustomWorkflows] = useState<WorkflowDefinition[]>([]);
+  const [nodePresets, setNodePresets] = useState<CanvasNodePresetDefinition[]>([]);
   const [serverSession, setServerSession] = useState<ServerSession>({ authenticated: false });
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
   const [systemDarkMode, setSystemDarkMode] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
@@ -142,9 +148,10 @@ export function TabletWorkbench() {
 
     async function hydrateWorkbench() {
       try {
-        const [projects, storedAssets] = await Promise.all([
+        const [projects, storedAssets, templateLibrary] = await Promise.all([
           tabletStorage.listProjects(),
           tabletStorage.listImageAssets(),
+          tabletStorage.loadCanvasTemplateLibrary(),
         ]);
         const assetResults = await Promise.allSettled(
           storedAssets.map(async (asset) => ({
@@ -168,6 +175,8 @@ export function TabletWorkbench() {
             .map((result) => result.value),
         );
         setProjects(project ? projects : [initialProject]);
+        setCustomWorkflows(templateLibrary.workflows);
+        setNodePresets(templateLibrary.nodePresets);
         setActiveProjectId(initialProject.id);
         setNodes(initialProject.nodes.map(normalizeStoredNode));
         setViewport(initialProject.viewport);
@@ -433,6 +442,85 @@ export function TabletWorkbench() {
     setSelectedNodeId(workflowNodes[0]?.id);
     setIsWorkflowLibraryOpen(false);
     setNotice({ tone: "success", message: `已添加工作流“${workflow.name}”，选择其中任一节点后可整组运行` });
+  };
+
+  const addNodePresetToCanvas = (preset: CanvasNodePresetDefinition) => {
+    const center = getViewportCenter(viewport);
+    const model = getImageModelPreset(MANAGED_IMAGE_MODEL.model);
+    const resolution = model.resolutions.includes(preset.resolution)
+      ? preset.resolution
+      : model.defaultResolution;
+    const request: ImageGenerationRequest = {
+      id: createId("generation-request"),
+      prompt: preset.prompt,
+      inputAssetIds: [],
+      model: MANAGED_IMAGE_MODEL,
+      aspectRatio: normalizeImageAspectRatio(model.id, resolution, preset.aspectRatio),
+      resolution,
+      count: Math.min(4, Math.max(1, Math.round(preset.count))),
+      createdAt: Date.now(),
+    };
+    const node = {
+      ...createGenerationNode(request, nodesRef.current.length, {
+        x: center.x - 186,
+        y: center.y - 250,
+      }),
+      title: preset.name,
+    };
+    updateNodesState((current) => [...current, node]);
+    setSelectedNodeId(node.id);
+    setIsWorkflowLibraryOpen(false);
+    setNotice({ tone: "success", message: `已添加节点预设“${preset.name}”` });
+  };
+
+  const importCanvasTemplates = async (files: FileList | null) => {
+    if (!files?.length || isTemplateImporting) return;
+    setIsTemplateImporting(true);
+    setNotice({ tone: "neutral", message: "正在解析桌面端 JSON 模板" });
+    try {
+      const importedWorkflows: WorkflowDefinition[] = [];
+      const importedPresets: CanvasNodePresetDefinition[] = [];
+      let convertedTextNodeCount = 0;
+      let skippedNodeCount = 0;
+      let failedCount = 0;
+
+      for (const [index, file] of [...files].entries()) {
+        try {
+          const result = parseCanvasTemplateJson(await file.text(), Date.now() + index);
+          importedWorkflows.push(...result.workflows);
+          importedPresets.push(...result.nodePresets);
+          convertedTextNodeCount += result.convertedTextNodeCount;
+          skippedNodeCount += result.skippedNodeCount;
+        } catch (error) {
+          failedCount += 1;
+          console.warn(`JSON 模板读取失败：${file.name}`, error);
+        }
+      }
+
+      if (importedWorkflows.length === 0 && importedPresets.length === 0) {
+        throw new Error(failedCount > 0 ? "JSON 文件读取失败或格式无效" : "没有识别到工作流或节点预设");
+      }
+      const nextWorkflows = mergeTemplates(customWorkflows, importedWorkflows, 48);
+      const nextPresets = mergeTemplates(nodePresets, importedPresets, 48);
+      await tabletStorage.saveCanvasTemplateLibrary({
+        workflows: nextWorkflows,
+        nodePresets: nextPresets,
+      });
+      setCustomWorkflows(nextWorkflows);
+      setNodePresets(nextPresets);
+      const details = [
+        `${importedWorkflows.length} 个工作流`,
+        `${importedPresets.length} 个节点预设`,
+        convertedTextNodeCount > 0 ? `${convertedTextNodeCount} 个文字步骤已转为 LLM` : "",
+        skippedNodeCount > 0 ? `${skippedNodeCount} 个不兼容节点已忽略` : "",
+        failedCount > 0 ? `${failedCount} 个文件失败` : "",
+      ].filter(Boolean).join("、");
+      setNotice({ tone: "success", message: `导入完成：${details}` });
+    } catch (error) {
+      setNotice({ tone: "error", message: getErrorMessage(error, "JSON 模板导入失败") });
+    } finally {
+      setIsTemplateImporting(false);
+    }
   };
 
   const updateGenerationNode = (nodeId: string, update: GenerationNodeUpdate) => {
@@ -921,8 +1009,13 @@ export function TabletWorkbench() {
 
       <WorkflowLibrary
         open={isWorkflowLibraryOpen}
+        workflows={[...TABLET_WORKFLOW_PRESETS, ...customWorkflows]}
+        nodePresets={nodePresets}
+        importing={isTemplateImporting}
         onClose={() => setIsWorkflowLibraryOpen(false)}
-        onAdd={addWorkflowToCanvas}
+        onAddWorkflow={addWorkflowToCanvas}
+        onAddNodePreset={addNodePresetToCanvas}
+        onImport={(files) => void importCanvasTemplates(files)}
       />
 
       {notice && (
@@ -1022,6 +1115,10 @@ function instantiateWorkflow(
       .filter((inputId) => definitionsById.get(inputId)?.type === "image-generation")
       .map((inputId) => nodeIds.get(inputId)!)
       .filter(Boolean);
+    const model = getImageModelPreset(MANAGED_IMAGE_MODEL.model);
+    const resolution = model.resolutions.includes(definition.resolution)
+      ? definition.resolution
+      : model.defaultResolution;
     return {
       ...common,
       type: "generation",
@@ -1035,15 +1132,25 @@ function instantiateWorkflow(
         textNodeIds,
         ruleNodeIds: [],
         model: MANAGED_IMAGE_MODEL,
-        aspectRatio: definition.aspectRatio,
-        resolution: definition.resolution,
-        count: definition.count,
+        aspectRatio: normalizeImageAspectRatio(model.id, resolution, definition.aspectRatio),
+        resolution,
+        count: Math.min(4, Math.max(1, Math.round(definition.count))),
         createdAt: Date.now() + index,
       },
       status: "idle",
       results: [],
     };
   });
+}
+
+function mergeTemplates<T extends { id: string }>(
+  current: T[],
+  imported: T[],
+  limit: number,
+): T[] {
+  const merged = new Map(current.map((item) => [item.id, item]));
+  imported.forEach((item) => merged.set(item.id, item));
+  return [...merged.values()].slice(-limit);
 }
 
 function createBlankProject(id: string, name: string): CanvasProject {

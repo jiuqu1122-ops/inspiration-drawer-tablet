@@ -1,4 +1,5 @@
 import type {
+  CanvasTemplateLibraryData,
   CanvasProject,
   DeviceImageImport,
   ImageAsset,
@@ -7,9 +8,15 @@ import type {
 import { createId } from "../utils/id";
 
 const DATABASE_NAME = "inspiration-drawer-tablet";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const PROJECT_STORE = "projects";
 const IMAGE_STORE = "images";
+const TEMPLATE_STORE = "templates";
+const TEMPLATE_LIBRARY_ID = "canvas-template-library";
+
+interface StoredTemplateLibrary extends CanvasTemplateLibraryData {
+  id: typeof TEMPLATE_LIBRARY_ID;
+}
 
 interface StoredImageRecord {
   asset: ImageAsset;
@@ -114,6 +121,22 @@ export class IndexedDbStorageService implements StorageService {
     await this.delete(IMAGE_STORE, assetId);
   }
 
+  async loadCanvasTemplateLibrary(): Promise<CanvasTemplateLibraryData> {
+    const stored = await this.get<StoredTemplateLibrary>(TEMPLATE_STORE, TEMPLATE_LIBRARY_ID);
+    return {
+      workflows: Array.isArray(stored?.workflows) ? stored.workflows : [],
+      nodePresets: Array.isArray(stored?.nodePresets) ? stored.nodePresets : [],
+    };
+  }
+
+  async saveCanvasTemplateLibrary(library: CanvasTemplateLibraryData): Promise<void> {
+    await this.put(TEMPLATE_STORE, {
+      id: TEMPLATE_LIBRARY_ID,
+      workflows: library.workflows,
+      nodePresets: library.nodePresets,
+    } satisfies StoredTemplateLibrary);
+  }
+
   private openDatabase(): Promise<IDBDatabase> {
     if (!this.databasePromise) {
       this.databasePromise = new Promise((resolve, reject) => {
@@ -126,6 +149,9 @@ export class IndexedDbStorageService implements StorageService {
           }
           if (!database.objectStoreNames.contains(IMAGE_STORE)) {
             database.createObjectStore(IMAGE_STORE, { keyPath: "asset.id" });
+          }
+          if (!database.objectStoreNames.contains(TEMPLATE_STORE)) {
+            database.createObjectStore(TEMPLATE_STORE, { keyPath: "id" });
           }
         };
         request.onsuccess = () => resolve(request.result);

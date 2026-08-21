@@ -1,3 +1,5 @@
+import type { ImageAspectRatio, ImageResolution } from "../types/generation";
+
 export interface WorkflowInputSlot {
   id: string;
   label: string;
@@ -13,6 +15,22 @@ export interface WorkflowDefinition {
   inputSlots: WorkflowInputSlot[];
   nodes: WorkflowNodeDefinition[];
   createdAt: number;
+}
+
+export interface CanvasNodePresetDefinition {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  aspectRatio: WorkflowImageNodeDefinition["aspectRatio"];
+  resolution: WorkflowImageNodeDefinition["resolution"];
+  count: number;
+  createdAt: number;
+}
+
+export interface CanvasTemplateLibraryData {
+  workflows: WorkflowDefinition[];
+  nodePresets: CanvasNodePresetDefinition[];
 }
 
 export type WorkflowNodeDefinition = WorkflowTextNodeDefinition | WorkflowImageNodeDefinition;
@@ -35,7 +53,7 @@ export interface WorkflowTextNodeDefinition extends WorkflowNodeDefinitionBase {
 export interface WorkflowImageNodeDefinition extends WorkflowNodeDefinitionBase {
   type: "image-generation";
   prompt: string;
-  aspectRatio: "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
-  resolution: "1k" | "2k" | "4k";
+  aspectRatio: ImageAspectRatio;
+  resolution: ImageResolution;
   count: number;
 }
