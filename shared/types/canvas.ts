@@ -23,6 +23,9 @@ interface CanvasNodeBase extends CanvasPoint, CanvasSize {
   id: string;
   createdAt: number;
   zIndex: number;
+  workflowInstanceId?: string;
+  workflowTemplateId?: string;
+  workflowOrder?: number;
 }
 
 export interface CanvasImageNode extends CanvasNodeBase {
@@ -47,7 +50,18 @@ export interface CanvasRuleNode extends CanvasNodeBase {
   rules: ImageRuleState;
 }
 
-export type CanvasNode = CanvasImageNode | CanvasGenerationNode | CanvasRuleNode;
+export interface CanvasTextNode extends CanvasNodeBase {
+  type: "text";
+  title: string;
+  prompt: string;
+  systemPrompt: string;
+  inputNodeIds: string[];
+  output: string;
+  status: "idle" | "running" | "success" | "error";
+  error?: string;
+}
+
+export type CanvasNode = CanvasImageNode | CanvasGenerationNode | CanvasRuleNode | CanvasTextNode;
 
 export interface CanvasProject {
   id: string;

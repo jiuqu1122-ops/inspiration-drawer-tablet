@@ -20,6 +20,8 @@ export interface ImageGenerationRequest {
   id: string;
   prompt: string;
   inputAssetIds: string[];
+  upstreamNodeIds?: string[];
+  textNodeIds?: string[];
   ruleNodeIds?: string[];
   model: ImageModelConfig;
   aspectRatio: ImageAspectRatio;

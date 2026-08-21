@@ -98,6 +98,15 @@ struct OptimizeServerPromptInput {
     locale: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateServerTextInput {
+    request_id: String,
+    prompt: String,
+    system_prompt: Option<String>,
+    context: Vec<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeGeneratedImage {
@@ -109,6 +118,12 @@ struct NativeGeneratedImage {
 #[serde(rename_all = "camelCase")]
 struct NativePromptOptimization {
     optimized_prompt: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeGeneratedText {
+    text: String,
 }
 
 #[tauri::command]
@@ -281,6 +296,60 @@ async fn optimize_server_prompt(
     let optimized_prompt = extract_completion_content(&result)
         .ok_or_else(|| "提示词优化服务没有返回有效内容".to_string())?;
     Ok(NativePromptOptimization { optimized_prompt })
+}
+
+#[tauri::command]
+async fn generate_server_text(
+    app: tauri::AppHandle,
+    input: GenerateServerTextInput,
+) -> Result<NativeGeneratedText, String> {
+    if input.request_id.trim().len() < 8 || input.request_id.len() > 128 {
+        return Err("文字 LLM 请求 ID 无效".to_string());
+    }
+    let prompt = input.prompt.trim();
+    if prompt.is_empty() || prompt.len() > 50_000 {
+        return Err("文字 LLM 节点提示词无效".to_string());
+    }
+    let context = input
+        .context
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .take(12)
+        .collect::<Vec<_>>();
+    let user_content = if context.is_empty() {
+        prompt.to_string()
+    } else {
+        format!(
+            "上游节点结果：\n\n{}\n\n当前节点指令：\n{}",
+            context.join("\n\n---\n\n"),
+            prompt,
+        )
+    };
+    let mut messages = Vec::new();
+    if let Some(system_prompt) = input.system_prompt.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        messages.push(json!({ "role": "system", "content": system_prompt }));
+    }
+    messages.push(json!({ "role": "user", "content": user_content }));
+    let client = create_http_client()?;
+    let body = json!({
+        "clientRequestId": input.request_id,
+        "messages": messages,
+    });
+    let (status, payload) = authenticated_json_request(
+        &app,
+        &client,
+        Method::POST,
+        "v1/ai/chat/completions",
+        Some(body),
+    )
+    .await?;
+    ensure_success(status, &payload, "文字 LLM 任务创建失败")?;
+    let task_id = required_string(&payload, "/taskId", "服务端没有返回文字 LLM 任务")?;
+    let result = poll_agent_task(&app, &client, &task_id).await?;
+    let text = extract_completion_content(&result)
+        .ok_or_else(|| "文字 LLM 节点没有返回有效内容".to_string())?;
+    Ok(NativeGeneratedText { text })
 }
 
 async fn upload_reference(
@@ -932,6 +1001,7 @@ pub fn run() {
             logout_server_session,
             generate_server_images,
             optimize_server_prompt,
+            generate_server_text,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

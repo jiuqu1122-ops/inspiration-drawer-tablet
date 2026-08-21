@@ -6,6 +6,7 @@ import {
   MagicWand,
   Play,
   SlidersHorizontal,
+  TextT,
   Trash,
   X,
 } from "@phosphor-icons/react";
@@ -29,6 +30,7 @@ import {
   type CanvasNode,
   type CanvasPoint,
   type CanvasRuleNode,
+  type CanvasTextNode,
   type CanvasViewport,
   type ImageAsset,
   type ImageGenerationRequest,
@@ -59,11 +61,14 @@ interface CanvasStageProps {
   onSelectNode: (nodeId?: string) => void;
   onGenerationChange: (nodeId: string, update: GenerationNodeUpdate) => void;
   onRuleNodeChange: (nodeId: string, presetId: ImageRulePresetId, rules: ImageRuleState) => void;
+  onTextNodeChange: (nodeId: string, update: Partial<Pick<CanvasTextNode, "prompt" | "systemPrompt">>) => void;
+  onRunTextNode: (nodeId: string) => void;
   onOptimizePrompt: (nodeId: string) => void;
   onRunGeneration: (nodeId: string) => void;
   onConnect: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectReference: (targetNodeId: string, assetId: string) => void;
   onDisconnectRule: (targetNodeId: string, ruleNodeId: string) => void;
+  onDisconnectNode: (targetNodeId: string, sourceNodeId: string) => void;
 }
 
 type Gesture =
@@ -129,11 +134,14 @@ export function CanvasStage({
   onSelectNode,
   onGenerationChange,
   onRuleNodeChange,
+  onTextNodeChange,
+  onRunTextNode,
   onOptimizePrompt,
   onRunGeneration,
   onConnect,
   onDisconnectReference,
   onDisconnectRule,
+  onDisconnectNode,
 }: CanvasStageProps) {
   const stageRef = useRef<HTMLDivElement>(null);
   const viewportLayerRef = useRef<HTMLDivElement>(null);
@@ -155,6 +163,7 @@ export function CanvasStage({
     () => new Map(nodes.filter((node): node is CanvasRuleNode => node.type === "rule").map((node) => [node.id, node])),
     [nodes],
   );
+  const nodesById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   const connections = useMemo(() => collectConnections(nodes), [nodes]);
 
   const applyViewport = useCallback((next: CanvasViewport) => {
@@ -216,7 +225,7 @@ export function CanvasStage({
 
   const beginConnection = (
     event: ReactPointerEvent<HTMLButtonElement>,
-    sourceNode: Extract<CanvasNode, { type: "image" | "rule" }>,
+    sourceNode: CanvasNode,
   ) => {
     if (event.button !== 0 && event.pointerType === "mouse") {
       return;
@@ -315,9 +324,11 @@ export function CanvasStage({
     const gesture = gestureRef.current;
 
     if (gesture?.mode === "connect" && gesture.pointerId === event.pointerId) {
-      const targetNodeId = findGenerationTargetAtPoint(event.clientX, event.clientY);
+      const targetNodeId = findConnectionTargetAtPoint(event.clientX, event.clientY);
       const targetNode = targetNodeId
-        ? nodes.find((node): node is CanvasGenerationNode => node.id === targetNodeId && node.type === "generation")
+        ? nodes.find((node): node is CanvasGenerationNode | CanvasTextNode => (
+          node.id === targetNodeId && (node.type === "generation" || node.type === "text")
+        ))
         : undefined;
       const currentWorld = targetNode ? getInputPoint(targetNode) : stageToWorld(point);
       gesture.currentWorld = currentWorld;
@@ -399,7 +410,7 @@ export function CanvasStage({
     }
 
     if (gesture?.mode === "connect" && gesture.pointerId === event.pointerId) {
-      const targetNodeId = gesture.targetNodeId ?? findGenerationTargetAtPoint(event.clientX, event.clientY);
+      const targetNodeId = gesture.targetNodeId ?? findConnectionTargetAtPoint(event.clientX, event.clientY);
       if (targetNodeId && targetNodeId !== gesture.sourceNodeId) {
         onConnect(gesture.sourceNodeId, targetNodeId);
         setConnectionSourceId(undefined);
@@ -509,12 +520,38 @@ export function CanvasStage({
             );
           }
 
+          if (node.type === "text") {
+            return (
+              <TextCanvasNode
+                key={node.id}
+                node={node}
+                nodesById={nodesById}
+                isSelected={selectedNodeId === node.id}
+                isConnectionSource={connectionSourceId === node.id}
+                hasPendingConnection={Boolean(connectionSourceId && connectionSourceId !== node.id)}
+                isConnectionTarget={connectionDraft?.targetNodeId === node.id}
+                registerElement={(element) => registerNodeElement(node.id, element, nodeElementsRef.current)}
+                onBeginConnection={(event) => beginConnection(event, node)}
+                onAcceptConnection={() => {
+                  if (connectionSourceId) {
+                    onConnect(connectionSourceId, node.id);
+                    setConnectionSourceId(undefined);
+                  }
+                }}
+                onChange={(update) => onTextNodeChange(node.id, update)}
+                onRun={() => onRunTextNode(node.id)}
+                onDisconnectNode={(sourceNodeId) => onDisconnectNode(node.id, sourceNodeId)}
+              />
+            );
+          }
+
           return (
             <GenerationCanvasNode
               key={node.id}
               node={node}
               assetsById={assetsById}
               rulesById={rulesById}
+              nodesById={nodesById}
               isSelected={selectedNodeId === node.id}
               isOptimizing={optimizingNodeIds.has(node.id)}
               hasPendingConnection={Boolean(connectionSourceId)}
@@ -529,8 +566,10 @@ export function CanvasStage({
               onChange={(update) => onGenerationChange(node.id, update)}
               onOptimize={() => onOptimizePrompt(node.id)}
               onRun={() => onRunGeneration(node.id)}
+              onBeginConnection={(event) => beginConnection(event, node)}
               onDisconnectReference={(assetId) => onDisconnectReference(node.id, assetId)}
               onDisconnectRule={(ruleNodeId) => onDisconnectRule(node.id, ruleNodeId)}
+              onDisconnectNode={(sourceNodeId) => onDisconnectNode(node.id, sourceNodeId)}
             />
           );
         })}
@@ -699,10 +738,110 @@ function RuleCanvasNode({
   );
 }
 
+function TextCanvasNode({
+  node,
+  nodesById,
+  isSelected,
+  isConnectionSource,
+  hasPendingConnection,
+  isConnectionTarget,
+  registerElement,
+  onBeginConnection,
+  onAcceptConnection,
+  onChange,
+  onRun,
+  onDisconnectNode,
+}: {
+  node: CanvasTextNode;
+  nodesById: Map<string, CanvasNode>;
+  isSelected: boolean;
+  isConnectionSource: boolean;
+  hasPendingConnection: boolean;
+  isConnectionTarget: boolean;
+  registerElement: (element: HTMLDivElement | null) => void;
+  onBeginConnection: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onAcceptConnection: () => void;
+  onChange: (update: Partial<Pick<CanvasTextNode, "prompt" | "systemPrompt">>) => void;
+  onRun: () => void;
+  onDisconnectNode: (sourceNodeId: string) => void;
+}) {
+  const inputs = node.inputNodeIds
+    .map((sourceNodeId) => nodesById.get(sourceNodeId))
+    .filter((sourceNode): sourceNode is CanvasGenerationNode | CanvasTextNode => (
+      sourceNode?.type === "generation" || sourceNode?.type === "text"
+    ));
+  const statusLabel = node.status === "running" ? "生成中" : node.status === "success" ? "完成" : node.status === "error" ? "失败" : "待运行";
+  return (
+    <div
+      ref={registerElement}
+      className={`${isSelected ? "canvas-node text-node is-selected" : "canvas-node text-node"} is-${node.status}${isConnectionSource ? " is-connection-source" : ""}`}
+      data-canvas-node-id={node.id}
+      data-connection-target-node-id={node.id}
+      style={{ width: node.width, height: node.height, transform: `translate3d(${node.x}px, ${node.y}px, 0)`, zIndex: node.zIndex }}
+    >
+      <header className="text-node-header">
+        <span className="text-node-icon"><TextT weight="bold" /></span>
+        <span><strong>{node.title}</strong><small>文字 LLM · {inputs.length} 个上游</small></span>
+        <span className={`node-status is-${node.status}`}>{statusLabel}</span>
+      </header>
+      <button
+        className={`${hasPendingConnection ? "node-port input-port is-ready" : "node-port input-port"}${isConnectionTarget ? " is-targeted" : ""}`}
+        type="button"
+        data-canvas-control="true"
+        data-connection-input-node-id={node.id}
+        aria-label="接收上游节点连接"
+        onClick={onAcceptConnection}
+      ><span /></button>
+      <button
+        className="node-port output-port text-output-port"
+        type="button"
+        data-canvas-control="true"
+        aria-pressed={isConnectionSource}
+        aria-label="连接文字结果到下游节点"
+        onPointerDown={onBeginConnection}
+      ><span /></button>
+      <div className="text-node-content" data-canvas-control="true">
+        {inputs.length > 0 && (
+          <div className="text-node-inputs">
+            {inputs.map((sourceNode) => (
+              <span key={sourceNode.id}>
+                {sourceNode.type === "text" ? <TextT /> : <MagicWand />}{sourceNode.title}
+                <button type="button" onClick={() => onDisconnectNode(sourceNode.id)}><X /></button>
+              </span>
+            ))}
+          </div>
+        )}
+        <label>
+          <span>节点指令</span>
+          <textarea value={node.prompt} onChange={(event) => onChange({ prompt: event.currentTarget.value })} placeholder="输入需要 LLM 完成的文字任务" />
+        </label>
+        <details>
+          <summary>系统提示词</summary>
+          <textarea value={node.systemPrompt} onChange={(event) => onChange({ systemPrompt: event.currentTarget.value })} />
+        </details>
+        <div className={`text-node-result is-${node.status}`}>
+          {node.status === "running"
+            ? <><span className="generation-spinner" /><small>正在生成文字结果…</small></>
+            : node.status === "error"
+              ? <small>{node.error}</small>
+              : node.output
+                ? <pre>{node.output}</pre>
+                : <small>运行后，结果可连接到生图或下一个文字节点。</small>}
+        </div>
+        <button className="text-node-run-action" type="button" onClick={onRun} disabled={node.status === "running" || !node.prompt.trim()}>
+          {node.status === "running" ? <span className="button-spinner" /> : <Play weight="fill" />}
+          {node.status === "running" ? "生成中" : "运行文字 LLM"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function GenerationCanvasNode({
   node,
   assetsById,
   rulesById,
+  nodesById,
   isSelected,
   isOptimizing,
   hasPendingConnection,
@@ -712,12 +851,15 @@ function GenerationCanvasNode({
   onChange,
   onOptimize,
   onRun,
+  onBeginConnection,
   onDisconnectReference,
   onDisconnectRule,
+  onDisconnectNode,
 }: {
   node: CanvasGenerationNode;
   assetsById: Map<string, CanvasAssetView>;
   rulesById: Map<string, CanvasRuleNode>;
+  nodesById: Map<string, CanvasNode>;
   isSelected: boolean;
   isOptimizing: boolean;
   hasPendingConnection: boolean;
@@ -727,8 +869,10 @@ function GenerationCanvasNode({
   onChange: (update: GenerationNodeUpdate) => void;
   onOptimize: () => void;
   onRun: () => void;
+  onBeginConnection: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onDisconnectReference: (assetId: string) => void;
   onDisconnectRule: (ruleNodeId: string) => void;
+  onDisconnectNode: (sourceNodeId: string) => void;
 }) {
   const modelPreset = getImageModelPreset(node.request.model.model);
   const aspectRatioOptions = getImageAspectRatioOptions(modelPreset.id, node.request.resolution);
@@ -746,6 +890,14 @@ function GenerationCanvasNode({
   const connectedRules = (node.request.ruleNodeIds ?? [])
     .map((ruleNodeId) => rulesById.get(ruleNodeId))
     .filter((ruleNode): ruleNode is CanvasRuleNode => Boolean(ruleNode));
+  const connectedNodes = [
+    ...(node.request.upstreamNodeIds ?? []),
+    ...(node.request.textNodeIds ?? []),
+  ]
+    .map((sourceNodeId) => nodesById.get(sourceNodeId))
+    .filter((sourceNode): sourceNode is CanvasGenerationNode | CanvasTextNode => (
+      sourceNode?.type === "generation" || sourceNode?.type === "text"
+    ));
   const statusLabel = node.status === "running" ? "生成中" : node.status === "success" ? "完成" : node.status === "error" ? "失败" : "待运行";
 
   return (
@@ -754,6 +906,7 @@ function GenerationCanvasNode({
       className={`${isSelected ? "canvas-node generation-node is-selected" : "canvas-node generation-node"} is-${node.status}`}
       data-canvas-node-id={node.id}
       data-generation-target-node-id={node.id}
+      data-connection-target-node-id={node.id}
       style={{ width: node.width, height: node.height, transform: `translate3d(${node.x}px, ${node.y}px, 0)`, zIndex: node.zIndex }}
     >
       <header className="generation-node-header">
@@ -763,10 +916,19 @@ function GenerationCanvasNode({
       </header>
 
       <button
+        className="node-port output-port generation-output-port"
+        type="button"
+        data-canvas-control="true"
+        aria-label="连接生成结果到下游节点"
+        onPointerDown={onBeginConnection}
+      ><span /></button>
+
+      <button
         className={`${hasPendingConnection ? "node-port input-port is-ready" : "node-port input-port"}${isConnectionTarget ? " is-targeted" : ""}`}
         type="button"
         data-canvas-control="true"
         data-generation-input-node-id={node.id}
+        data-connection-input-node-id={node.id}
         aria-label="接收图片或规则节点连接"
         onClick={onAcceptConnection}
       >
@@ -816,7 +978,14 @@ function GenerationCanvasNode({
                 <button type="button" onClick={() => onDisconnectRule(ruleNode.id)} aria-label={`断开规则 ${ruleNode.title}`}><X /></button>
               </span>
             ))}
-            {!referenceViews.length && !connectedRules.length && (
+            {connectedNodes.map((sourceNode) => (
+              <span className={`connected-node-chip is-${sourceNode.type}`} key={sourceNode.id}>
+                {sourceNode.type === "text" ? <TextT /> : <MagicWand />}
+                <span>{sourceNode.title}</span>
+                <button type="button" onClick={() => onDisconnectNode(sourceNode.id)} aria-label={`断开节点 ${sourceNode.title}`}><X /></button>
+              </span>
+            ))}
+            {!referenceViews.length && !connectedRules.length && !connectedNodes.length && (
               <span className="reference-empty"><Link />拖入图片或规则节点</span>
             )}
           </div>
@@ -901,48 +1070,64 @@ function GenerationCanvasNode({
 }
 
 function collectConnections(nodes: CanvasNode[]) {
-  const sourceNodes = nodes.filter((node): node is Extract<CanvasNode, { type: "image" | "rule" }> => node.type === "image" || node.type === "rule");
   const connections: Array<{
-    source: Extract<CanvasNode, { type: "image" | "rule" }>;
-    target: CanvasGenerationNode;
+    source: CanvasNode;
+    target: CanvasGenerationNode | CanvasTextNode;
     key: string;
-    kind: "image" | "rule";
+    kind: "image" | "rule" | "text" | "generation";
   }> = [];
   for (const target of nodes) {
+    if (target.type === "text") {
+      target.inputNodeIds.forEach((sourceNodeId) => {
+        const source = nodes.find((node) => node.id === sourceNodeId);
+        if (source && (source.type === "text" || source.type === "generation")) {
+          connections.push({ source, target, key: `${source.id}-${target.id}-${source.type}`, kind: source.type });
+        }
+      });
+      continue;
+    }
     if (target.type !== "generation") {
       continue;
     }
     target.request.inputAssetIds.forEach((assetId) => {
-      const source = sourceNodes.find((node) => node.type === "image" && node.assetId === assetId);
+      const source = nodes.find((node) => node.type === "image" && node.assetId === assetId);
       if (source) connections.push({ source, target, key: `${source.id}-${target.id}-image`, kind: "image" });
     });
     (target.request.ruleNodeIds ?? []).forEach((ruleNodeId) => {
-      const source = sourceNodes.find((node) => node.type === "rule" && node.id === ruleNodeId);
+      const source = nodes.find((node) => node.type === "rule" && node.id === ruleNodeId);
       if (source) connections.push({ source, target, key: `${source.id}-${target.id}-rule`, kind: "rule" });
+    });
+    (target.request.upstreamNodeIds ?? []).forEach((sourceNodeId) => {
+      const source = nodes.find((node) => node.type === "generation" && node.id === sourceNodeId);
+      if (source) connections.push({ source, target, key: `${source.id}-${target.id}-generation`, kind: "generation" });
+    });
+    (target.request.textNodeIds ?? []).forEach((sourceNodeId) => {
+      const source = nodes.find((node) => node.type === "text" && node.id === sourceNodeId);
+      if (source) connections.push({ source, target, key: `${source.id}-${target.id}-text`, kind: "text" });
     });
   }
   return connections;
 }
 
-function findGenerationTargetAtPoint(clientX: number, clientY: number): string | undefined {
+function findConnectionTargetAtPoint(clientX: number, clientY: number): string | undefined {
   for (const element of document.elementsFromPoint(clientX, clientY)) {
-    const inputTarget = element.closest<HTMLElement>("[data-generation-input-node-id]");
-    if (inputTarget?.dataset.generationInputNodeId) {
-      return inputTarget.dataset.generationInputNodeId;
+    const inputTarget = element.closest<HTMLElement>("[data-connection-input-node-id]");
+    if (inputTarget?.dataset.connectionInputNodeId) {
+      return inputTarget.dataset.connectionInputNodeId;
     }
-    const nodeTarget = element.closest<HTMLElement>("[data-generation-target-node-id]");
-    if (nodeTarget?.dataset.generationTargetNodeId) {
-      return nodeTarget.dataset.generationTargetNodeId;
+    const nodeTarget = element.closest<HTMLElement>("[data-connection-target-node-id]");
+    if (nodeTarget?.dataset.connectionTargetNodeId) {
+      return nodeTarget.dataset.connectionTargetNodeId;
     }
   }
   return undefined;
 }
 
-function getOutputPoint(node: Extract<CanvasNode, { type: "image" | "rule" }>): CanvasPoint {
+function getOutputPoint(node: CanvasNode): CanvasPoint {
   return { x: node.x + node.width + 8, y: node.y + node.height / 2 };
 }
 
-function getInputPoint(node: CanvasGenerationNode): CanvasPoint {
+function getInputPoint(node: CanvasGenerationNode | CanvasTextNode): CanvasPoint {
   return { x: node.x - 8, y: node.y + 76 };
 }
 

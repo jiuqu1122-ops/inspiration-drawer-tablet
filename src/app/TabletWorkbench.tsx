@@ -6,12 +6,14 @@ import type {
   CanvasPoint,
   CanvasProject,
   CanvasRuleNode,
+  CanvasTextNode,
   CanvasViewport,
   GeneratedImageResult,
   ImageAsset,
   ImageGenerationRequest,
   ImageRulePresetId,
   ImageRuleState,
+  WorkflowDefinition,
 } from "../../shared";
 import {
   getImageModelPreset,
@@ -30,7 +32,9 @@ import {
   type GenerationNodeUpdate,
 } from "../features/canvas/CanvasStage";
 import { readDeviceImage } from "../features/inspiration/readDeviceImages";
+import { WorkflowLibrary } from "../features/workflow/WorkflowLibrary";
 import { TauriImageGenerationService } from "../services/tauriImageGenerationService";
+import { generateTextWithServer } from "../services/tauriTextGenerationService";
 import {
   getServerSession,
   type ServerSession,
@@ -66,14 +70,37 @@ export function TabletWorkbench() {
   const [notice, setNotice] = useState<WorkbenchNotice>();
   const [isImporting, setIsImporting] = useState(false);
   const [isAccountDialogOpen, setIsAccountDialogOpen] = useState(false);
+  const [isWorkflowLibraryOpen, setIsWorkflowLibraryOpen] = useState(false);
   const [serverSession, setServerSession] = useState<ServerSession>({ authenticated: false });
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
   const [systemDarkMode, setSystemDarkMode] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const [optimizingNodeIds, setOptimizingNodeIds] = useState<Set<string>>(() => new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hydratedRef = useRef(false);
+  const assetsRef = useRef<CanvasAssetView[]>([]);
   const nodesRef = useRef<CanvasNode[]>([]);
   const projectsRef = useRef<CanvasProject[]>([]);
+  const runningNodeIdsRef = useRef<Set<string>>(new Set());
+
+  const updateNodesState = useCallback((updater: (current: CanvasNode[]) => CanvasNode[]) => {
+    setNodes((current) => {
+      const next = updater(current);
+      nodesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const updateAssetsState = useCallback((updater: (current: CanvasAssetView[]) => CanvasAssetView[]) => {
+    setAssets((current) => {
+      const next = updater(current);
+      assetsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    assetsRef.current = assets;
+  }, [assets]);
 
   useEffect(() => {
     nodesRef.current = nodes;
@@ -385,6 +412,29 @@ export function TabletWorkbench() {
     setNotice({ tone: "neutral", message: "已创建规则节点，从右侧输出点拖到生图节点即可应用" });
   };
 
+  const addTextNode = () => {
+    const center = getViewportCenter(viewport);
+    const node = createTextNode("文字 LLM", nodes.length, {
+      x: center.x - 180,
+      y: center.y - 210,
+    });
+    updateNodesState((current) => [...current, node]);
+    setSelectedNodeId(node.id);
+    setNotice({ tone: "neutral", message: "已创建文字 LLM 节点，可连接到生图或下一个文字节点" });
+  };
+
+  const addWorkflowToCanvas = (workflow: WorkflowDefinition) => {
+    const center = getViewportCenter(viewport);
+    const workflowNodes = instantiateWorkflow(workflow, nodes.length, {
+      x: center.x - 340,
+      y: center.y - 260,
+    });
+    updateNodesState((current) => [...current, ...workflowNodes]);
+    setSelectedNodeId(workflowNodes[0]?.id);
+    setIsWorkflowLibraryOpen(false);
+    setNotice({ tone: "success", message: `已添加工作流“${workflow.name}”，选择其中任一节点后可整组运行` });
+  };
+
   const updateGenerationNode = (nodeId: string, update: GenerationNodeUpdate) => {
     setNodes((current) => current.map((node) =>
       node.id === nodeId && node.type === "generation"
@@ -406,17 +456,23 @@ export function TabletWorkbench() {
     ));
   };
 
+  const updateTextNode = (nodeId: string, update: Partial<Pick<CanvasTextNode, "prompt" | "systemPrompt">>) => {
+    updateNodesState((current) => current.map((node) => (
+      node.id === nodeId && node.type === "text" ? { ...node, ...update } : node
+    )));
+  };
+
   const optimizeGenerationPrompt = async (nodeId: string) => {
-    const sourceNode = nodes.find((node): node is CanvasGenerationNode => node.id === nodeId && node.type === "generation");
+    const sourceNode = nodesRef.current.find((node): node is CanvasGenerationNode => node.id === nodeId && node.type === "generation");
     const originalPrompt = sourceNode?.request.prompt.trim() ?? "";
     if (!sourceNode || !originalPrompt) {
       setNotice({ tone: "error", message: "请先输入需要优化的提示词" });
-      return;
+      return false;
     }
     if (!serverSession.authenticated) {
       setIsAccountDialogOpen(true);
       setNotice({ tone: "neutral", message: "请先登录已绑定额度的邮箱，再优化提示词" });
-      return;
+      return false;
     }
     setOptimizingNodeIds((current) => new Set(current).add(nodeId));
     setNotice({ tone: "neutral", message: "正在按工业设计任务优化提示词" });
@@ -449,21 +505,78 @@ export function TabletWorkbench() {
     }
   };
 
-  const runGenerationNode = async (nodeId: string) => {
-    const sourceNode = nodes.find((node): node is CanvasGenerationNode => node.id === nodeId && node.type === "generation");
-    if (!sourceNode) {
-      return;
+  const runTextNode = async (nodeId: string, quiet = false): Promise<boolean> => {
+    const sourceNode = nodesRef.current.find((node): node is CanvasTextNode => node.id === nodeId && node.type === "text");
+    if (!sourceNode || !sourceNode.prompt.trim()) return false;
+    if (runningNodeIdsRef.current.has(nodeId)) return false;
+    if (!serverSession.authenticated) {
+      setIsAccountDialogOpen(true);
+      setNotice({ tone: "neutral", message: "请先登录同一邮箱账号，再运行文字 LLM 节点" });
+      return false;
     }
+    runningNodeIdsRef.current.add(nodeId);
+    const context = sourceNode.inputNodeIds.flatMap((inputNodeId) => {
+      const inputNode = nodesRef.current.find((node) => node.id === inputNodeId);
+      if (inputNode?.type === "text" && inputNode.output.trim()) {
+        return [`${inputNode.title}：\n${inputNode.output.trim()}`];
+      }
+      if (inputNode?.type === "generation" && inputNode.results.length > 0) {
+        return [`${inputNode.title}已生成 ${inputNode.results.length} 张图。节点指令：\n${inputNode.request.prompt}`];
+      }
+      return [];
+    });
+    updateNodesState((current) => current.map((node) => (
+      node.id === nodeId && node.type === "text"
+        ? { ...node, status: "running", error: undefined }
+        : node
+    )));
+    if (!quiet) setNotice({ tone: "neutral", message: `正在运行文字 LLM：${sourceNode.title}` });
+    try {
+      const output = await generateTextWithServer({
+        requestId: createId("tablet-text-llm"),
+        prompt: sourceNode.prompt,
+        systemPrompt: sourceNode.systemPrompt,
+        context,
+      });
+      updateNodesState((current) => current.map((node) => (
+        node.id === nodeId && node.type === "text"
+          ? { ...node, status: "success", output, error: undefined }
+          : node
+      )));
+      if (!quiet) setNotice({ tone: "success", message: `文字 LLM“${sourceNode.title}”已完成` });
+      void getServerSession().then(setServerSession).catch(() => undefined);
+      return true;
+    } catch (error) {
+      const message = getErrorMessage(error, "文字 LLM 节点运行失败");
+      updateNodesState((current) => current.map((node) => (
+        node.id === nodeId && node.type === "text"
+          ? { ...node, status: "error", error: message }
+          : node
+      )));
+      setNotice({ tone: "error", message });
+      return false;
+    } finally {
+      runningNodeIdsRef.current.delete(nodeId);
+    }
+  };
+
+  const runGenerationNode = async (nodeId: string, quiet = false): Promise<boolean> => {
+    const sourceNode = nodesRef.current.find((node): node is CanvasGenerationNode => node.id === nodeId && node.type === "generation");
+    if (!sourceNode) {
+      return false;
+    }
+    if (runningNodeIdsRef.current.has(nodeId)) return false;
     const cleanPrompt = sourceNode.request.prompt.trim();
     if (!cleanPrompt) {
       setNotice({ tone: "error", message: "请先在生图节点中描述产品设计任务" });
-      return;
+      return false;
     }
     if (!serverSession.authenticated) {
       setIsAccountDialogOpen(true);
       setNotice({ tone: "neutral", message: "请先登录已绑定额度的邮箱，再运行生图节点" });
-      return;
+      return false;
     }
+    runningNodeIdsRef.current.add(nodeId);
 
     const request: ImageGenerationRequest = {
       ...sourceNode.request,
@@ -471,23 +584,38 @@ export function TabletWorkbench() {
       prompt: cleanPrompt,
       createdAt: Date.now(),
     };
-    setNodes((current) => current.map((node) =>
+    updateNodesState((current) => current.map((node) =>
       node.id === nodeId && node.type === "generation"
         ? { ...node, request, status: "running", error: undefined }
         : node,
     ));
     setSelectedNodeId(nodeId);
-    setNotice({ tone: "neutral", message: "正在生成产品概念图" });
+    if (!quiet) setNotice({ tone: "neutral", message: `正在运行生图节点：${sourceNode.title}` });
 
     try {
-      const inputAssets = request.inputAssetIds
-        .map((assetId) => assets.find((entry) => entry.asset.id === assetId))
+      const upstreamAssetIds = (request.upstreamNodeIds ?? []).flatMap((upstreamNodeId) => {
+        const upstream = nodesRef.current.find((node) => node.id === upstreamNodeId);
+        return upstream?.type === "generation" ? upstream.results.map((result) => result.id) : [];
+      });
+      const textContext = (request.textNodeIds ?? []).flatMap((textNodeId) => {
+        const textNode = nodesRef.current.find((node) => node.id === textNodeId);
+        return textNode?.type === "text" && textNode.output.trim()
+          ? [`上游文字节点“${textNode.title}”：\n${textNode.output.trim()}`]
+          : [];
+      });
+      const executionRequest: ImageGenerationRequest = {
+        ...request,
+        prompt: [request.prompt, ...textContext].filter(Boolean).join("\n\n"),
+        inputAssetIds: Array.from(new Set([...request.inputAssetIds, ...upstreamAssetIds])),
+      };
+      const inputAssets = executionRequest.inputAssetIds
+        .map((assetId) => assetsRef.current.find((entry) => entry.asset.id === assetId))
         .map((entry) => entry ? { ...entry.asset, uri: entry.displayUri } : undefined)
         .filter((asset): asset is ImageAsset => Boolean(asset));
       const rules = mergeImageRuleStates(...(request.ruleNodeIds ?? [])
-        .map((ruleNodeId) => nodes.find((node): node is CanvasRuleNode => node.id === ruleNodeId && node.type === "rule")?.rules));
+        .map((ruleNodeId) => nodesRef.current.find((node): node is CanvasRuleNode => node.id === ruleNodeId && node.type === "rule")?.rules));
       const service = new TauriImageGenerationService();
-      const results = await service.generate(request, { inputAssets, rules });
+      const results = await service.generate(executionRequest, { inputAssets, rules });
       const savedEntries = await Promise.all(results.map(async (result, index) => {
         const asset = await tabletStorage.saveGeneratedImage(
           createGeneratedAsset(result, request, index),
@@ -507,49 +635,57 @@ export function TabletWorkbench() {
         createdAt: asset.createdAt,
       }));
 
-      setAssets((current) => [...savedEntries.slice().reverse(), ...current]);
-      setNodes((current) => current.map((node) =>
+      updateAssetsState((current) => [...savedEntries.slice().reverse(), ...current]);
+      updateNodesState((current) => current.map((node) =>
         node.id === nodeId && node.type === "generation"
           ? { ...node, status: "success", results: storedResults, error: undefined }
           : node,
       ));
-      setNotice({ tone: "success", message: `已生成 ${storedResults.length} 张图片并保存到素材库` });
+      if (!quiet) setNotice({ tone: "success", message: `已生成 ${storedResults.length} 张图片并保存到素材库` });
       void getServerSession().then(setServerSession).catch(() => undefined);
+      return true;
     } catch (error) {
       const message = getErrorMessage(error, "图片生成失败");
-      setNodes((current) => current.map((node) =>
+      updateNodesState((current) => current.map((node) =>
         node.id === nodeId && node.type === "generation"
           ? { ...node, status: "error", error: message }
           : node,
       ));
       setNotice({ tone: "error", message });
+      return false;
+    } finally {
+      runningNodeIdsRef.current.delete(nodeId);
     }
   };
 
   const connectNodes = (sourceNodeId: string, targetNodeId: string) => {
-    const source = nodes.find((node) => node.id === sourceNodeId);
-    if (!source || source.type === "generation") {
-      return;
-    }
-    setNodes((current) => current.map((node) => {
-      if (node.id !== targetNodeId || node.type !== "generation") {
-        return node;
+    const source = nodesRef.current.find((node) => node.id === sourceNodeId);
+    const target = nodesRef.current.find((node) => node.id === targetNodeId);
+    if (!source || !target || source.id === target.id) return;
+    updateNodesState((current) => current.map((node) => {
+      if (node.id !== targetNodeId) return node;
+      if (node.type === "text") {
+        if ((source.type !== "text" && source.type !== "generation") || node.inputNodeIds.includes(source.id)) return node;
+        return { ...node, inputNodeIds: [...node.inputNodeIds, source.id] };
       }
+      if (node.type !== "generation") return node;
       if (source.type === "image") {
         if (node.request.inputAssetIds.includes(source.assetId)) return node;
-        return {
-          ...node,
-          request: { ...node.request, inputAssetIds: [...node.request.inputAssetIds, source.assetId] },
-        };
+        return { ...node, request: { ...node.request, inputAssetIds: [...node.request.inputAssetIds, source.assetId] } };
       }
-      if ((node.request.ruleNodeIds ?? []).includes(source.id)) return node;
-      return {
-        ...node,
-        request: { ...node.request, ruleNodeIds: [...(node.request.ruleNodeIds ?? []), source.id] },
-      };
+      if (source.type === "rule") {
+        if ((node.request.ruleNodeIds ?? []).includes(source.id)) return node;
+        return { ...node, request: { ...node.request, ruleNodeIds: [...(node.request.ruleNodeIds ?? []), source.id] } };
+      }
+      if (source.type === "text") {
+        if ((node.request.textNodeIds ?? []).includes(source.id)) return node;
+        return { ...node, request: { ...node.request, textNodeIds: [...(node.request.textNodeIds ?? []), source.id] } };
+      }
+      if ((node.request.upstreamNodeIds ?? []).includes(source.id)) return node;
+      return { ...node, request: { ...node.request, upstreamNodeIds: [...(node.request.upstreamNodeIds ?? []), source.id] } };
     }));
     setSelectedNodeId(targetNodeId);
-    setNotice({ tone: "success", message: source.type === "image" ? "参考图片已连接到生图节点" : "图像规则已连接到生图节点" });
+    setNotice({ tone: "success", message: `已连接“${source.title}”到“${target.title}”` });
   };
 
   const disconnectReference = (targetNodeId: string, assetId: string) => {
@@ -574,12 +710,35 @@ export function TabletWorkbench() {
     ));
   };
 
+  const disconnectNode = (targetNodeId: string, sourceNodeId: string) => {
+    updateNodesState((current) => current.map((node) => {
+      if (node.id !== targetNodeId) return node;
+      if (node.type === "text") {
+        return { ...node, inputNodeIds: node.inputNodeIds.filter((candidate) => candidate !== sourceNodeId) };
+      }
+      if (node.type === "generation") {
+        return {
+          ...node,
+          request: {
+            ...node.request,
+            upstreamNodeIds: (node.request.upstreamNodeIds ?? []).filter((candidate) => candidate !== sourceNodeId),
+            textNodeIds: (node.request.textNodeIds ?? []).filter((candidate) => candidate !== sourceNodeId),
+          },
+        };
+      }
+      return node;
+    }));
+  };
+
   const removeNode = (nodeId: string) => {
-    setNodes((current) => {
+    updateNodesState((current) => {
       const removed = current.find((node) => node.id === nodeId);
       return current
         .filter((node) => node.id !== nodeId)
         .map((node) => {
+          if (node.type === "text") {
+            return { ...node, inputNodeIds: node.inputNodeIds.filter((candidate) => candidate !== nodeId) };
+          }
           if (node.type !== "generation") return node;
           if (removed?.type === "image") {
             return { ...node, request: { ...node.request, inputAssetIds: node.request.inputAssetIds.filter((assetId) => assetId !== removed.assetId) } };
@@ -587,19 +746,51 @@ export function TabletWorkbench() {
           if (removed?.type === "rule") {
             return { ...node, request: { ...node.request, ruleNodeIds: (node.request.ruleNodeIds ?? []).filter((ruleNodeId) => ruleNodeId !== removed.id) } };
           }
-          return node;
+          return {
+            ...node,
+            request: {
+              ...node.request,
+              upstreamNodeIds: (node.request.upstreamNodeIds ?? []).filter((candidate) => candidate !== nodeId),
+              textNodeIds: (node.request.textNodeIds ?? []).filter((candidate) => candidate !== nodeId),
+            },
+          };
         });
     });
     setSelectedNodeId(undefined);
   };
 
-  const runSelectedGeneration = () => {
-    const selected = nodes.find((node): node is CanvasGenerationNode => node.id === selectedNodeId && node.type === "generation");
-    const fallback = [...nodes].reverse().find((node): node is CanvasGenerationNode => node.type === "generation");
-    const target = selected ?? fallback;
-    if (target) {
-      void runGenerationNode(target.id);
+  const runWorkflowInstance = async (workflowInstanceId: string) => {
+    const workflowNodes = nodesRef.current
+      .filter((node) => node.workflowInstanceId === workflowInstanceId && (node.type === "text" || node.type === "generation"))
+      .sort((left, right) => (left.workflowOrder ?? 0) - (right.workflowOrder ?? 0));
+    if (!workflowNodes.length) return;
+    setNotice({ tone: "neutral", message: `正在运行工作流，共 ${workflowNodes.length} 个节点` });
+    for (const node of workflowNodes) {
+      const completed = node.type === "text"
+        ? await runTextNode(node.id, true)
+        : await runGenerationNode(node.id, true);
+      if (!completed) return;
     }
+    setNotice({ tone: "success", message: "工作流已全部运行完成" });
+  };
+
+  const runSelectedGeneration = () => {
+    const selected = nodesRef.current.find((node) => node.id === selectedNodeId);
+    if (selected?.workflowInstanceId) {
+      void runWorkflowInstance(selected.workflowInstanceId);
+      return;
+    }
+    if (selected?.type === "text") {
+      void runTextNode(selected.id);
+      return;
+    }
+    if (selected?.type === "generation") {
+      void runGenerationNode(selected.id);
+      return;
+    }
+    const fallback = [...nodesRef.current].reverse().find((node) => node.type === "generation" || node.type === "text");
+    if (fallback?.type === "text") void runTextNode(fallback.id);
+    if (fallback?.type === "generation") void runGenerationNode(fallback.id);
   };
 
   const arrangeCanvas = () => {
@@ -637,7 +828,9 @@ export function TabletWorkbench() {
     setNotice({ tone: "success", message: "已按素材与生图节点整理画布" });
   };
 
-  const canRunGeneration = nodes.some((node) => node.type === "generation" && node.status !== "running");
+  const canRunGeneration = nodes.some((node) => (
+    (node.type === "generation" || node.type === "text") && node.status !== "running"
+  ));
   const activeProject = projects.find((project) => project.id === activeProjectId);
 
   return (
@@ -689,11 +882,14 @@ export function TabletWorkbench() {
           onSelectNode={setSelectedNodeId}
           onGenerationChange={updateGenerationNode}
           onRuleNodeChange={updateRuleNode}
+          onTextNodeChange={updateTextNode}
+          onRunTextNode={(nodeId) => void runTextNode(nodeId)}
           onOptimizePrompt={(nodeId) => void optimizeGenerationPrompt(nodeId)}
           onRunGeneration={(nodeId) => void runGenerationNode(nodeId)}
           onConnect={connectNodes}
           onDisconnectReference={disconnectReference}
           onDisconnectRule={disconnectRule}
+          onDisconnectNode={disconnectNode}
         />
       </section>
 
@@ -717,9 +913,16 @@ export function TabletWorkbench() {
         onImport={requestImageImport}
         onAddGeneration={addGenerationNode}
         onAddRules={addRuleNode}
+        onAddText={addTextNode}
         onRun={runSelectedGeneration}
         onArrange={arrangeCanvas}
-        onWorkflow={() => setNotice({ tone: "neutral", message: "工作流将在节点基础能力完成后接入" })}
+        onWorkflow={() => setIsWorkflowLibraryOpen(true)}
+      />
+
+      <WorkflowLibrary
+        open={isWorkflowLibraryOpen}
+        onClose={() => setIsWorkflowLibraryOpen(false)}
+        onAdd={addWorkflowToCanvas}
       />
 
       {notice && (
@@ -756,6 +959,91 @@ function createImageNode(asset: ImageAsset, index: number, point: CanvasPoint): 
     zIndex: index + 1,
     createdAt: Date.now() + index,
   };
+}
+
+function createTextNode(title: string, index: number, point: CanvasPoint): CanvasTextNode {
+  return {
+    id: createId("canvas-text-llm"),
+    type: "text",
+    title,
+    prompt: "",
+    systemPrompt: "你是 Inspiration Drawer 的工业设计文字 LLM 节点。只输出可直接交付给下游节点的内容。",
+    inputNodeIds: [],
+    output: "",
+    status: "idle",
+    x: point.x,
+    y: point.y,
+    width: 360,
+    height: 448,
+    zIndex: index + 1,
+    createdAt: Date.now(),
+  };
+}
+
+function instantiateWorkflow(
+  workflow: WorkflowDefinition,
+  startIndex: number,
+  origin: CanvasPoint,
+): CanvasNode[] {
+  const workflowInstanceId = createId(`workflow-${workflow.id}`);
+  const nodeIds = new Map(workflow.nodes.map((definition) => [definition.id, createId(`workflow-node-${definition.id}`)]));
+  const definitionsById = new Map(workflow.nodes.map((definition) => [definition.id, definition]));
+  return workflow.nodes.map((definition, index): CanvasNode => {
+    const id = nodeIds.get(definition.id)!;
+    const common = {
+      id,
+      title: definition.title,
+      x: origin.x + definition.x,
+      y: origin.y + definition.y,
+      zIndex: startIndex + index + 1,
+      workflowInstanceId,
+      workflowTemplateId: workflow.id,
+      workflowOrder: index,
+      createdAt: Date.now() + index,
+    };
+    if (definition.type === "text-llm") {
+      return {
+        ...common,
+        type: "text",
+        width: 360,
+        height: 448,
+        prompt: definition.prompt,
+        systemPrompt: definition.systemPrompt,
+        inputNodeIds: definition.inputs.map((inputId) => nodeIds.get(inputId)).filter((value): value is string => Boolean(value)),
+        output: "",
+        status: "idle",
+      };
+    }
+    const textNodeIds = definition.inputs
+      .filter((inputId) => definitionsById.get(inputId)?.type === "text-llm")
+      .map((inputId) => nodeIds.get(inputId)!)
+      .filter(Boolean);
+    const upstreamNodeIds = definition.inputs
+      .filter((inputId) => definitionsById.get(inputId)?.type === "image-generation")
+      .map((inputId) => nodeIds.get(inputId)!)
+      .filter(Boolean);
+    return {
+      ...common,
+      type: "generation",
+      width: 372,
+      height: 574,
+      request: {
+        id: createId("generation-request"),
+        prompt: definition.prompt,
+        inputAssetIds: [],
+        upstreamNodeIds,
+        textNodeIds,
+        ruleNodeIds: [],
+        model: MANAGED_IMAGE_MODEL,
+        aspectRatio: definition.aspectRatio,
+        resolution: definition.resolution,
+        count: definition.count,
+        createdAt: Date.now() + index,
+      },
+      status: "idle",
+      results: [],
+    };
+  });
 }
 
 function createBlankProject(id: string, name: string): CanvasProject {
@@ -846,6 +1134,16 @@ function normalizeStoredNode(node: CanvasNode): CanvasNode {
   if (node.type === "rule") {
     return { ...node, width: 292, height: 342 };
   }
+  if (node.type === "text") {
+    return {
+      ...node,
+      width: 360,
+      height: 448,
+      inputNodeIds: node.inputNodeIds ?? [],
+      output: node.output ?? "",
+      status: node.status === "running" ? "idle" : node.status,
+    };
+  }
   const modelId = isImageModelPresetId(node.request.model.model)
     ? node.request.model.model
     : "nano-banana-pro";
@@ -867,6 +1165,8 @@ function normalizeStoredNode(node: CanvasNode): CanvasNode {
         node.request.aspectRatio,
       ),
       ruleNodeIds: node.request.ruleNodeIds ?? [],
+      upstreamNodeIds: node.request.upstreamNodeIds ?? [],
+      textNodeIds: node.request.textNodeIds ?? [],
     },
   };
 }
