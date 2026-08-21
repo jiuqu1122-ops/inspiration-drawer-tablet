@@ -339,12 +339,13 @@ select:focus-visible {
   width: 1px;
   height: 1px;
   overflow: visible;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .node-connection-halo,
 .node-connection-line {
   fill: none;
+  pointer-events: none;
   vector-effect: non-scaling-stroke;
 }
 
@@ -363,6 +364,16 @@ select:focus-visible {
   stroke: url(#rule-connection-gradient);
 }
 
+.node-connection-hit-area {
+  fill: none;
+  stroke: transparent;
+  stroke-linecap: round;
+  stroke-width: 30;
+  pointer-events: stroke;
+  touch-action: none;
+  vector-effect: non-scaling-stroke;
+}
+
 .node-connection-draft {
   fill: none;
   stroke: #169fdd;
@@ -370,6 +381,7 @@ select:focus-visible {
   stroke-linecap: round;
   stroke-dasharray: 9 7;
   vector-effect: non-scaling-stroke;
+  pointer-events: none;
 }
 
 .connection-draft-point {
@@ -377,6 +389,11 @@ select:focus-visible {
   stroke: #169fdd;
   stroke-width: 3;
   vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.connection-point {
+  pointer-events: none;
 }
 
 .connection-point {
@@ -2117,6 +2134,36 @@ select:focus-visible {
 :root[data-theme="dark"] .gesture-hint {
   color: var(--muted);
   background: rgba(31, 32, 30, 0.82);
+}
+
+:root[data-theme="dark"] .canvas-tool-dock {
+  border-color: #4b4d49;
+  background: rgba(35, 36, 33, 0.97);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+}
+
+:root[data-theme="dark"] .canvas-tool-dock button:not(:disabled) {
+  border: 1px solid transparent;
+  color: #f1eee8;
+  background: #2d2f2b;
+  opacity: 1;
+}
+
+:root[data-theme="dark"] .canvas-tool-dock button:not(:disabled):hover,
+:root[data-theme="dark"] .canvas-tool-dock button:not(:disabled):active {
+  border-color: #62655f;
+  color: #ffffff;
+  background: #3a3d38;
+}
+
+:root[data-theme="dark"] .canvas-tool-dock button:disabled {
+  color: #73766f;
+  background: transparent;
+  opacity: 0.48;
+}
+
+:root[data-theme="dark"] .canvas-context-menu button:hover {
+  background: rgba(161, 66, 56, 0.2);
 }
 
 :root[data-theme="dark"] .connected-rule-chip,

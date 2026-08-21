@@ -13,6 +13,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -115,6 +116,19 @@ interface ContextMenuState {
   top: number;
 }
 
+interface ConnectionMenuState {
+  sourceNodeId: string;
+  targetNodeId: string;
+  kind: "image" | "rule" | "text" | "generation";
+  left: number;
+  top: number;
+}
+
+interface ConnectionPressState {
+  pointerId: number;
+  origin: CanvasPoint;
+}
+
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 4;
 const LONG_PRESS_MS = 520;
@@ -151,9 +165,18 @@ export function CanvasStage({
   const liveViewportRef = useRef(viewport);
   const longPressTimerRef = useRef<number | undefined>(undefined);
   const longPressOriginRef = useRef<CanvasPoint | undefined>(undefined);
+  const connectionPressTimerRef = useRef<number | undefined>(undefined);
+  const connectionPressRef = useRef<ConnectionPressState | undefined>(undefined);
+  const connectionLayoutFrameRef = useRef<number | undefined>(undefined);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
+  const [connectionMenu, setConnectionMenu] = useState<ConnectionMenuState>();
   const [connectionSourceId, setConnectionSourceId] = useState<string>();
   const [connectionDraft, setConnectionDraft] = useState<ConnectionDraft>();
+  const [connectionLayoutRevision, setConnectionLayoutRevision] = useState(0);
+  const [connectionPortPoints, setConnectionPortPoints] = useState<Record<string, {
+    start: CanvasPoint;
+    end: CanvasPoint;
+  }>>({});
 
   const assetsById = useMemo(
     () => new Map(assets.map((entry) => [entry.asset.id, entry])),
@@ -165,6 +188,14 @@ export function CanvasStage({
   );
   const nodesById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   const connections = useMemo(() => collectConnections(nodes), [nodes]);
+
+  const refreshConnectionLayout = useCallback(() => {
+    if (connectionLayoutFrameRef.current !== undefined) return;
+    connectionLayoutFrameRef.current = window.requestAnimationFrame(() => {
+      connectionLayoutFrameRef.current = undefined;
+      setConnectionLayoutRevision((revision) => revision + 1);
+    });
+  }, []);
 
   const applyViewport = useCallback((next: CanvasViewport) => {
     liveViewportRef.current = next;
@@ -178,11 +209,37 @@ export function CanvasStage({
     applyViewport(viewport);
   }, [applyViewport, viewport]);
 
-  useEffect(() => () => window.clearTimeout(longPressTimerRef.current), []);
+  useEffect(() => () => {
+    window.clearTimeout(longPressTimerRef.current);
+    window.clearTimeout(connectionPressTimerRef.current);
+    if (connectionLayoutFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(connectionLayoutFrameRef.current);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    refreshConnectionLayout();
+    const observer = typeof ResizeObserver === "undefined"
+      ? undefined
+      : new ResizeObserver(refreshConnectionLayout);
+    if (stageRef.current) observer?.observe(stageRef.current);
+    nodeElementsRef.current.forEach((element) => observer?.observe(element));
+    window.addEventListener("resize", refreshConnectionLayout);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", refreshConnectionLayout);
+    };
+  }, [nodes, refreshConnectionLayout]);
 
   const clearLongPress = useCallback(() => {
     window.clearTimeout(longPressTimerRef.current);
     longPressTimerRef.current = undefined;
+  }, []);
+
+  const clearConnectionPress = useCallback(() => {
+    window.clearTimeout(connectionPressTimerRef.current);
+    connectionPressTimerRef.current = undefined;
+    connectionPressRef.current = undefined;
   }, []);
 
   const getStagePointFromClient = (clientX: number, clientY: number): CanvasPoint => {
@@ -204,6 +261,51 @@ export function CanvasStage({
       y: (point.y - current.y) / current.scale,
     };
   };
+
+  const getPortWorldPoint = useCallback((
+    node: CanvasNode,
+    selector: ".output-port" | ".input-port",
+    fallback: CanvasPoint,
+  ): CanvasPoint => {
+    const nodeElement = nodeElementsRef.current.get(node.id);
+    const portElement = nodeElement?.querySelector<HTMLElement>(selector);
+    if (!nodeElement || !portElement) return fallback;
+    const stageBounds = stageRef.current?.getBoundingClientRect();
+    const portBounds = portElement.getBoundingClientRect();
+    const current = liveViewportRef.current;
+    const scale = Math.max(liveViewportRef.current.scale, MIN_SCALE);
+    if (!stageBounds || portBounds.width <= 0) return fallback;
+    return {
+      x: (portBounds.left + portBounds.width / 2 - stageBounds.left - current.x) / scale,
+      y: (portBounds.top + portBounds.height / 2 - stageBounds.top - current.y) / scale,
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const nextPoints = Object.fromEntries(connections.map((connection) => [
+      connection.key,
+      {
+        start: getPortWorldPoint(
+          connection.source,
+          ".output-port",
+          getOutputPoint(connection.source),
+        ),
+        end: getPortWorldPoint(
+          connection.target,
+          ".input-port",
+          getInputPoint(connection.target),
+        ),
+      },
+    ]));
+    setConnectionPortPoints(nextPoints);
+  }, [connections, connectionLayoutRevision, getPortWorldPoint, viewport.scale]);
+
+  const renderedConnections = useMemo(() => connections.map((connection) => {
+    const measured = connectionPortPoints[connection.key];
+    const start = measured?.start ?? getOutputPoint(connection.source);
+    const end = measured?.end ?? getInputPoint(connection.target);
+    return { ...connection, start, end, path: createConnectionPath(start, end) };
+  }), [connections, connectionPortPoints]);
 
   const beginPinch = useCallback(() => {
     const points = [...activePointersRef.current.values()];
@@ -237,7 +339,7 @@ export function CanvasStage({
       return;
     }
     const stagePoint = getStagePointFromClient(event.clientX, event.clientY);
-    const startWorld = getOutputPoint(sourceNode);
+    const startWorld = getPortWorldPoint(sourceNode, ".output-port", getOutputPoint(sourceNode));
     stage.setPointerCapture(event.pointerId);
     activePointersRef.current.set(event.pointerId, stagePoint);
     gestureRef.current = {
@@ -254,6 +356,65 @@ export function CanvasStage({
     onSelectNode(sourceNode.id);
   };
 
+  const beginConnectionLongPress = (
+    event: ReactPointerEvent<SVGPathElement>,
+    connection: (typeof connections)[number],
+  ) => {
+    if (event.button !== 0 && event.pointerType === "mouse") return;
+    event.stopPropagation();
+    clearConnectionPress();
+    setContextMenu(undefined);
+    setConnectionMenu(undefined);
+    const origin = getStagePointFromClient(event.clientX, event.clientY);
+    connectionPressRef.current = { pointerId: event.pointerId, origin };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    connectionPressTimerRef.current = window.setTimeout(() => {
+      showConnectionMenu(connection, origin);
+      connectionPressTimerRef.current = undefined;
+      connectionPressRef.current = undefined;
+    }, LONG_PRESS_MS);
+  };
+
+  function showConnectionMenu(
+    connection: (typeof connections)[number],
+    point: CanvasPoint,
+  ) {
+    setContextMenu(undefined);
+    setConnectionMenu({
+      sourceNodeId: connection.source.id,
+      targetNodeId: connection.target.id,
+      kind: connection.kind,
+      left: point.x,
+      top: point.y,
+    });
+  }
+
+  const moveConnectionLongPress = (event: ReactPointerEvent<SVGPathElement>) => {
+    const press = connectionPressRef.current;
+    if (!press || press.pointerId !== event.pointerId) return;
+    const point = getStagePointFromClient(event.clientX, event.clientY);
+    if (getDistance(press.origin, point) > 10) clearConnectionPress();
+  };
+
+  const finishConnectionLongPress = (event: ReactPointerEvent<SVGPathElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    clearConnectionPress();
+  };
+
+  const deleteConnection = (menu: ConnectionMenuState) => {
+    const source = nodesById.get(menu.sourceNodeId);
+    if (menu.kind === "image" && source?.type === "image") {
+      onDisconnectReference(menu.targetNodeId, source.assetId);
+    } else if (menu.kind === "rule") {
+      onDisconnectRule(menu.targetNodeId, menu.sourceNodeId);
+    } else {
+      onDisconnectNode(menu.targetNodeId, menu.sourceNodeId);
+    }
+    setConnectionMenu(undefined);
+  };
+
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if ((event.target as HTMLElement).closest("[data-canvas-control='true']")) {
       return;
@@ -267,6 +428,7 @@ export function CanvasStage({
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
     setContextMenu(undefined);
+    setConnectionMenu(undefined);
 
     if (activePointersRef.current.size >= 2) {
       clearLongPress();
@@ -330,7 +492,9 @@ export function CanvasStage({
           node.id === targetNodeId && (node.type === "generation" || node.type === "text")
         ))
         : undefined;
-      const currentWorld = targetNode ? getInputPoint(targetNode) : stageToWorld(point);
+      const currentWorld = targetNode
+        ? getPortWorldPoint(targetNode, ".input-port", getInputPoint(targetNode))
+        : stageToWorld(point);
       gesture.currentWorld = currentWorld;
       gesture.targetNodeId = targetNodeId;
       gesture.moved = gesture.moved || getDistance(gesture.startPoint, point) >= CONNECTION_DRAG_THRESHOLD;
@@ -391,6 +555,7 @@ export function CanvasStage({
       const element = nodeElementsRef.current.get(gesture.nodeId);
       if (element) {
         element.style.transform = `translate3d(${next.x}px, ${next.y}px, 0)`;
+        refreshConnectionLayout();
       }
     }
   };
@@ -454,7 +619,7 @@ export function CanvasStage({
     >
       <div className="canvas-grid" aria-hidden="true" />
       <div ref={viewportLayerRef} className="canvas-viewport">
-        <svg className="node-connections" aria-hidden="true">
+        <svg className="node-connections" aria-label="节点连线层">
           <defs>
             <linearGradient id="node-connection-gradient" gradientUnits="userSpaceOnUse" x1="0" x2="420">
               <stop offset="0" stopColor="#10bce5" />
@@ -465,14 +630,40 @@ export function CanvasStage({
               <stop offset="1" stopColor="#55a984" />
             </linearGradient>
           </defs>
-          {connections.map(({ source, target, key, kind }) => {
-            const start = getOutputPoint(source);
-            const end = getInputPoint(target);
-            const path = createConnectionPath(start, end);
+          {renderedConnections.map(({ source, target, key, kind, start, end, path }) => {
+            const connection = { source, target, key, kind };
             return (
               <g key={key}>
                 <path className="node-connection-halo" d={path} />
                 <path className={`node-connection-line is-${kind}`} d={path} />
+                <path
+                  className="node-connection-hit-area"
+                  d={path}
+                  data-connection-key={key}
+                  data-edge-source-node-id={source.id}
+                  data-edge-target-node-id={target.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`连线：${source.title} 到 ${target.title}，长按删除`}
+                  onPointerDown={(event) => beginConnectionLongPress(event, connection)}
+                  onPointerMove={moveConnectionLongPress}
+                  onPointerUp={finishConnectionLongPress}
+                  onPointerCancel={finishConnectionLongPress}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    showConnectionMenu(connection, getStagePointFromClient(event.clientX, event.clientY));
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    showConnectionMenu(connection, getStagePointFromClient(
+                      bounds.left + bounds.width / 2,
+                      bounds.top + bounds.height / 2,
+                    ));
+                  }}
+                  onContextMenu={(event) => event.preventDefault()}
+                />
                 <circle className={`connection-point source is-${kind}`} cx={start.x} cy={start.y} r="5" />
                 <circle className="connection-point target" cx={end.x} cy={end.y} r="5" />
               </g>
@@ -617,9 +808,21 @@ export function CanvasStage({
         </div>
       )}
 
+      {connectionMenu && (
+        <div
+          className="canvas-context-menu connection-context-menu"
+          style={{ left: connectionMenu.left, top: connectionMenu.top }}
+          data-canvas-control="true"
+        >
+          <button type="button" onClick={() => deleteConnection(connectionMenu)}>
+            <Trash />删除这条连线
+          </button>
+        </div>
+      )}
+
       <div className="gesture-hint">
         <HandTap />
-        <span>拖拽端口连线 · 双指缩放 · 长按节点</span>
+        <span>拖拽端口连线 · 双指缩放 · 长按节点或连线</span>
       </div>
     </div>
   );
