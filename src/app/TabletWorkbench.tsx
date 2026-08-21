@@ -386,6 +386,26 @@ export function TabletWorkbench() {
     }
   };
 
+  const renameProject = async (projectId: string, requestedName: string) => {
+    const name = requestedName.trim().slice(0, 48);
+    const target = projectsRef.current.find((project) => project.id === projectId);
+    if (!target || !name || name === target.name) return;
+    const renamed: CanvasProject = {
+      ...target,
+      name,
+      nodes: projectId === activeProjectId ? nodesRef.current : target.nodes,
+      viewport: projectId === activeProjectId ? viewport : target.viewport,
+      updatedAt: Date.now(),
+    };
+    try {
+      await tabletStorage.saveProject(renamed);
+      setProjects((current) => upsertProject(current, renamed));
+      setNotice({ tone: "success", message: `项目已重命名为“${name}”` });
+    } catch (error) {
+      setNotice({ tone: "error", message: getErrorMessage(error, "项目重命名失败") });
+    }
+  };
+
   const addGenerationNode = () => {
     const center = getViewportCenter(viewport);
     const request: ImageGenerationRequest = {
@@ -991,6 +1011,7 @@ export function TabletWorkbench() {
         onAssetRemove={(assetId) => void removeDeviceAsset(assetId)}
         onProjectCreate={() => void createProject()}
         onProjectSelect={(projectId) => void selectProject(projectId)}
+        onProjectRename={(projectId, name) => void renameProject(projectId, name)}
         onChange={setResourceSection}
         onOpenChange={setIsResourceDrawerOpen}
         onImport={requestImageImport}

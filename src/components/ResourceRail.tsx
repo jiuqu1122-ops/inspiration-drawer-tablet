@@ -1,12 +1,15 @@
 import {
+  Check,
   Folders,
   ImageSquare,
   MagnifyingGlass,
+  PencilSimple,
   Plus,
   Trash,
   Toolbox,
   X,
 } from "@phosphor-icons/react";
+import { useState } from "react";
 import type { CanvasAssetView } from "../features/canvas/CanvasStage";
 import type { CanvasProject } from "../../shared";
 
@@ -22,6 +25,7 @@ interface ResourceRailProps {
   onAssetRemove: (assetId: string) => void;
   onProjectCreate: () => void;
   onProjectSelect: (projectId: string) => void;
+  onProjectRename: (projectId: string, name: string) => void;
   onChange: (section: ResourceSection) => void;
   onOpenChange: (open: boolean) => void;
   onImport: () => void;
@@ -47,10 +51,13 @@ export function ResourceRail({
   onAssetRemove,
   onProjectCreate,
   onProjectSelect,
+  onProjectRename,
   onChange,
   onOpenChange,
   onImport,
 }: ResourceRailProps) {
+  const [editingProjectId, setEditingProjectId] = useState<string>();
+  const [projectNameDraft, setProjectNameDraft] = useState("");
   const importedAssets = assets.filter((entry) => entry.asset.source === "device");
   const generatedAssets = assets.filter((entry) => entry.asset.source === "generated");
 
@@ -121,19 +128,55 @@ export function ResourceRail({
                 const materialCount = new Set(project.nodes.flatMap((node) => (
                   node.type === "image" ? [node.assetId] : node.type === "generation" ? node.request.inputAssetIds : []
                 ))).size;
+                const isEditing = project.id === editingProjectId;
                 return (
-                  <button
+                  <div
                     className={isCurrent ? "project-row is-current" : "project-row"}
                     key={project.id}
-                    type="button"
-                    onClick={() => onProjectSelect(project.id)}
                   >
-                    <span className="project-thumbnail"><ImageSquare /></span>
-                    <span>
-                      <strong>{project.name}</strong>
-                      <small>{materialCount} 个素材{isCurrent ? " · 当前" : ""}</small>
-                    </span>
-                  </button>
+                    {isEditing ? (
+                      <form className="project-rename-form" onSubmit={(event) => {
+                        event.preventDefault();
+                        const nextName = projectNameDraft.trim();
+                        if (nextName && nextName !== project.name) onProjectRename(project.id, nextName);
+                        setEditingProjectId(undefined);
+                      }}>
+                        <input
+                          autoFocus
+                          value={projectNameDraft}
+                          maxLength={48}
+                          aria-label={`重命名项目 ${project.name}`}
+                          onChange={(event) => setProjectNameDraft(event.currentTarget.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") setEditingProjectId(undefined);
+                          }}
+                        />
+                        <button type="submit" disabled={!projectNameDraft.trim()} aria-label="保存项目名称"><Check weight="bold" /></button>
+                        <button type="button" aria-label="取消重命名" onClick={() => setEditingProjectId(undefined)}><X /></button>
+                      </form>
+                    ) : (
+                      <>
+                        <button className="project-row-select" type="button" onClick={() => onProjectSelect(project.id)}>
+                          <span className="project-thumbnail"><ImageSquare /></span>
+                          <span>
+                            <strong>{project.name}</strong>
+                            <small>{materialCount} 个素材{isCurrent ? " · 当前" : ""}</small>
+                          </span>
+                        </button>
+                        <button
+                          className="project-rename-action"
+                          type="button"
+                          aria-label={`重命名项目 ${project.name}`}
+                          onClick={() => {
+                            setEditingProjectId(project.id);
+                            setProjectNameDraft(project.name);
+                          }}
+                        >
+                          <PencilSimple />
+                        </button>
+                      </>
+                    )}
+                  </div>
                 );
               })}
             </div>

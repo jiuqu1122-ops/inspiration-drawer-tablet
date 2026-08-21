@@ -1472,12 +1472,26 @@ select:focus-visible {
   display: flex;
   width: 100%;
   min-height: 64px;
-  padding: 8px;
+  padding: 6px;
   border: 1px solid var(--line);
   border-radius: 11px;
   align-items: center;
   gap: 9px;
   background: white;
+  text-align: left;
+}
+
+.project-row-select {
+  display: flex;
+  min-width: 0;
+  min-height: 50px;
+  padding: 2px;
+  border: 0;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  color: inherit;
+  background: transparent;
   text-align: left;
 }
 
@@ -1497,8 +1511,9 @@ select:focus-visible {
   background: #eceae6;
 }
 
-.project-row > span:last-child {
+.project-row-select > span:last-child {
   display: grid;
+  min-width: 0;
   gap: 3px;
 }
 
@@ -1509,6 +1524,66 @@ select:focus-visible {
 .project-row small {
   color: var(--muted);
   font-size: 8px;
+}
+
+.project-rename-action {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--muted);
+  background: var(--panel);
+}
+
+.project-rename-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.project-rename-form {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.project-rename-form input {
+  min-width: 0;
+  height: 42px;
+  padding: 0 11px;
+  border: 1px solid var(--accent-strong);
+  border-radius: 9px;
+  flex: 1;
+  color: var(--ink);
+  outline: none;
+  background: var(--panel);
+  font-size: 10px;
+}
+
+.project-rename-form button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--muted);
+  background: var(--panel);
+}
+
+.project-rename-form button[type="submit"] {
+  border-color: #2f302d;
+  color: white;
+  background: #2f302d;
+}
+
+.project-rename-form button:disabled {
+  opacity: 0.4;
 }
 
 .compact-empty {
@@ -2060,6 +2135,9 @@ select:focus-visible {
 :root[data-theme="dark"] .compact-empty,
 :root[data-theme="dark"] .project-row,
 :root[data-theme="dark"] .project-thumbnail,
+:root[data-theme="dark"] .project-rename-action,
+:root[data-theme="dark"] .project-rename-form input,
+:root[data-theme="dark"] .project-rename-form button,
 :root[data-theme="dark"] .canvas-tool-dock button:hover,
 :root[data-theme="dark"] .canvas-empty-icon,
 :root[data-theme="dark"] .node-status,
@@ -2070,6 +2148,12 @@ select:focus-visible {
 :root[data-theme="dark"] .generation-node-footer select {
   color: var(--ink);
   background: #272825;
+}
+
+:root[data-theme="dark"] .project-rename-form button[type="submit"] {
+  border-color: #e8e5df;
+  color: #181916;
+  background: #e8e5df;
 }
 
 :root[data-theme="dark"] .resource-nav-item.is-active,
