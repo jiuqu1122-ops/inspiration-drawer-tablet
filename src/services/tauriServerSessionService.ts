@@ -14,6 +14,11 @@ export interface EmailCodeChallenge {
   resendAfter: number;
 }
 
+export interface CreditRedemptionResult {
+  redeemedCredits: string;
+  session: ServerSession;
+}
+
 export async function getServerSession(): Promise<ServerSession> {
   if (!isTauri()) {
     return { authenticated: false };
@@ -48,6 +53,13 @@ export async function verifyServerEmailCode(input: {
 export async function logoutServerSession(): Promise<void> {
   assertTauriRuntime();
   await invoke("logout_server_session");
+}
+
+export async function redeemServerCreditCode(code: string): Promise<CreditRedemptionResult> {
+  assertTauriRuntime();
+  return invoke<CreditRedemptionResult>("redeem_server_credit_code", {
+    code: code.trim().toUpperCase(),
+  });
 }
 
 function assertTauriRuntime(): void {

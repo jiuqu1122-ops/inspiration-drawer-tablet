@@ -70,6 +70,13 @@ struct ServerSession {
     expires_at: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreditRedemptionResult {
+    redeemed_credits: String,
+    session: ServerSession,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ServerImageReference {
@@ -224,6 +231,43 @@ async fn logout_server_session(app: tauri::AppHandle) -> Result<(), String> {
     store.available_credits = None;
     store.expires_at = None;
     save_auth_store(&app, &store)
+}
+
+#[tauri::command]
+async fn redeem_server_credit_code(
+    app: tauri::AppHandle,
+    code: String,
+) -> Result<CreditRedemptionResult, String> {
+    let code = code.trim().to_uppercase();
+    if code.len() < 10 || code.len() > 64 {
+        return Err("invalid_code: 兑换码格式不正确".to_string());
+    }
+
+    let client = create_http_client()?;
+    let (status, payload) = authenticated_json_request(
+        &app,
+        &client,
+        Method::POST,
+        "v1/wallet/redeem",
+        Some(json!({ "code": code })),
+    )
+    .await?;
+    ensure_success(status, &payload, "兑换码兑换失败")?;
+
+    let redeemed_credits = required_string(&payload, "/redeemedCredits", "服务端没有返回兑换额度")?;
+    let available_credits = required_string(
+        &payload,
+        "/wallet/availableCredits",
+        "服务端没有返回最新额度",
+    )?;
+    let mut store = load_or_create_auth_store(&app)?;
+    store.available_credits = Some(available_credits);
+    save_auth_store(&app, &store)?;
+
+    Ok(CreditRedemptionResult {
+        redeemed_credits,
+        session: session_from_store(&store),
+    })
 }
 
 #[tauri::command]
@@ -999,6 +1043,7 @@ pub fn run() {
             verify_server_email_code,
             get_server_session,
             logout_server_session,
+            redeem_server_credit_code,
             generate_server_images,
             optimize_server_prompt,
             generate_server_text,

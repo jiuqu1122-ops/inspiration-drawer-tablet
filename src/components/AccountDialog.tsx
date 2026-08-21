@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ArrowLeft, CheckCircle, EnvelopeSimple, SignOut, UserCircle, X } from "@phosphor-icons/react";
+import { ArrowLeft, CheckCircle, EnvelopeSimple, SignOut, Ticket, UserCircle, X } from "@phosphor-icons/react";
 import type { EmailCodeChallenge, ServerSession } from "../services/tauriServerSessionService";
 import {
   logoutServerSession,
+  redeemServerCreditCode,
   requestServerEmailCode,
   verifyServerEmailCode,
 } from "../services/tauriServerSessionService";
@@ -24,6 +25,8 @@ export function AccountDialog({
   const [displayName, setDisplayName] = useState("");
   const [code, setCode] = useState("");
   const [challenge, setChallenge] = useState<EmailCodeChallenge>();
+  const [redeemCode, setRedeemCode] = useState("");
+  const [redeemSuccess, setRedeemSuccess] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -33,6 +36,8 @@ export function AccountDialog({
     setDisplayName(session.displayName ?? "");
     setCode("");
     setChallenge(undefined);
+    setRedeemCode("");
+    setRedeemSuccess(undefined);
     setError(undefined);
   }, [open, session.displayName, session.email]);
 
@@ -88,6 +93,28 @@ export function AccountDialog({
     }
   };
 
+  const redeemCredits = async (event: FormEvent) => {
+    event.preventDefault();
+    const normalizedCode = redeemCode.trim().toUpperCase();
+    if (normalizedCode.length < 10 || normalizedCode.length > 64) {
+      setError("请输入有效的额度兑换码");
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    setRedeemSuccess(undefined);
+    try {
+      const result = await redeemServerCreditCode(normalizedCode);
+      onSessionChange(result.session);
+      setRedeemCode("");
+      setRedeemSuccess(`兑换成功，已增加 ${formatCredits(result.redeemedCredits)} 积分`);
+    } catch (reason) {
+      setError(errorMessage(reason, "兑换码兑换失败"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="modal-backdrop" role="presentation" onPointerDown={(event) => {
       if (event.currentTarget === event.target) onClose();
@@ -117,6 +144,32 @@ export function AccountDialog({
               <span>可用积分</span>
             </div>
             {session.expiresAt && <p className="account-expiry">授权有效期至 {formatDate(session.expiresAt)}</p>}
+            <form className="credit-redemption-form" onSubmit={(event) => void redeemCredits(event)}>
+              <label htmlFor="credit-redemption-code">额度兑换码</label>
+              <div className="credit-redemption-row">
+                <div className="account-input-shell">
+                  <Ticket />
+                  <input
+                    id="credit-redemption-code"
+                    value={redeemCode}
+                    onChange={(event) => {
+                      setRedeemCode(event.currentTarget.value.toUpperCase());
+                      setError(undefined);
+                      setRedeemSuccess(undefined);
+                    }}
+                    minLength={10}
+                    maxLength={64}
+                    autoCapitalize="characters"
+                    autoComplete="off"
+                    placeholder="输入额度兑换码"
+                  />
+                </div>
+                <button type="submit" disabled={busy || redeemCode.trim().length < 10}>
+                  {busy ? "兑换中" : "兑换"}
+                </button>
+              </div>
+              {redeemSuccess && <p className="credit-redemption-success" role="status">{redeemSuccess}</p>}
+            </form>
             {error && <p className="dialog-error" role="alert">{error}</p>}
             <button className="account-logout-action" type="button" disabled={busy} onClick={() => void logout()}>
               <SignOut />{busy ? "正在退出" : "退出此设备"}
@@ -185,9 +238,10 @@ function formatDate(value: string): string {
 }
 
 function errorMessage(error: unknown, fallback: string): string {
-  return typeof error === "string" && error.trim()
+  const message = typeof error === "string" && error.trim()
     ? error
     : error instanceof Error && error.message.trim()
       ? error.message
       : fallback;
+  return message.replace(/^[a-z_]+:\s*/i, "");
 }

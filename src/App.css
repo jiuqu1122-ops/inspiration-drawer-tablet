@@ -2110,6 +2110,55 @@ select:focus-visible {
   letter-spacing: -0.04em;
 }
 
+.credit-redemption-form {
+  display: grid;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent-strong) 22%, var(--line));
+  border-radius: 13px;
+  gap: 8px;
+  background: var(--accent-soft);
+}
+
+.credit-redemption-form > label {
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.credit-redemption-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 78px;
+  gap: 8px;
+}
+
+.credit-redemption-row .account-input-shell {
+  min-width: 0;
+  background: var(--panel);
+}
+
+.credit-redemption-row button {
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid var(--accent-strong);
+  border-radius: 10px;
+  color: white;
+  background: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.credit-redemption-row button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.credit-redemption-success {
+  margin: 0;
+  color: #32845b;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
 :root[data-theme="dark"] .top-bar,
 :root[data-theme="dark"] .resource-nav,
 :root[data-theme="dark"] .canvas-tool-dock,
