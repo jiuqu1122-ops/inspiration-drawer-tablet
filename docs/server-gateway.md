@@ -1,11 +1,11 @@
-# Inspiration Drawer Tablet 服务端网关
+# Inspiration Drawer Mobile 服务端网关
 
 ## 目标
 
-平板应用不保存 XAIS、New API、Bigmodel 或其他上游渠道密钥，也不允许用户填写 API。
+移动端应用不保存 XAIS、New API、Bigmodel 或其他上游渠道密钥，也不允许用户填写 API。
 APK 只发送稳定的公开模型 ID；应用服务端负责鉴权、余额判断、渠道选择、失败重试与任务轮询。
 
-平板端配置：
+移动端配置：
 
 ```powershell
 $env:INSPIRATION_DRAWER_SERVER_URL = "https://api.example.com"

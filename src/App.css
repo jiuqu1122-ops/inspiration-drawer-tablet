@@ -2159,6 +2159,234 @@ select:focus-visible {
   line-height: 1.5;
 }
 
+.account-update-footer {
+  display: flex;
+  min-height: 58px;
+  padding: 8px 14px 8px 20px;
+  border-top: 1px solid var(--line);
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  background: var(--canvas);
+  font-size: 8px;
+}
+
+.account-update-footer button {
+  display: inline-flex;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  background: var(--panel);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.account-update-footer button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.account-update-footer svg {
+  width: 15px;
+  height: 15px;
+}
+
+.is-spinning {
+  animation: tablet-spin 0.9s linear infinite;
+}
+
+@keyframes tablet-spin {
+  to { transform: rotate(360deg); }
+}
+
+.tablet-update-backdrop {
+  z-index: 120;
+}
+
+.tablet-update-dialog {
+  width: min(480px, calc(100vw - 32px));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  color: var(--ink);
+  background: var(--panel);
+  box-shadow: 0 30px 90px rgba(21, 19, 16, 0.28);
+}
+
+.tablet-update-dialog > header {
+  display: flex;
+  min-height: 78px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+  gap: 11px;
+}
+
+.tablet-update-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  border-radius: 12px;
+  place-items: center;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.tablet-update-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.tablet-update-dialog > header > span:nth-child(2) {
+  display: grid;
+  gap: 3px;
+}
+
+.tablet-update-dialog > header small {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.tablet-update-dialog > header strong {
+  font-size: 14px;
+}
+
+.tablet-update-dialog > header > button {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  place-items: center;
+  color: var(--muted);
+  background: transparent;
+}
+
+.tablet-update-content {
+  display: grid;
+  padding: 20px;
+  gap: 14px;
+}
+
+.tablet-update-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tablet-update-meta span {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--canvas);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.tablet-update-notes {
+  min-height: 68px;
+  max-height: 150px;
+  overflow: auto;
+  margin: 0;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--canvas);
+  font-size: 10px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.tablet-update-security,
+.tablet-update-message {
+  display: flex;
+  margin: 0;
+  align-items: flex-start;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.tablet-update-security svg,
+.tablet-update-message svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  color: #438962;
+}
+
+.tablet-update-progress {
+  display: grid;
+  gap: 7px;
+}
+
+.tablet-update-progress > div {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.tablet-update-progress > div > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-strong);
+  transition: width 180ms ease;
+}
+
+.tablet-update-progress p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.tablet-update-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.tablet-update-actions button {
+  display: inline-flex;
+  min-width: 92px;
+  min-height: 46px;
+  padding: 0 15px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--ink);
+  background: var(--panel);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.tablet-update-actions button.is-primary {
+  min-width: 132px;
+  color: white;
+  border-color: #2f2d29;
+  background: #2f2d29;
+}
+
+.tablet-update-actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 :root[data-theme="dark"] .top-bar,
 :root[data-theme="dark"] .resource-nav,
 :root[data-theme="dark"] .canvas-tool-dock,

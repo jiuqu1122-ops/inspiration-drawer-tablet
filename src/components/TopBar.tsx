@@ -37,12 +37,12 @@ export function TopBar({
 }: TopBarProps) {
   return (
     <header className="top-bar">
-      <div className="brand-lockup" aria-label="Inspiration Drawer Tablet">
+      <div className="brand-lockup" aria-label="Inspiration Drawer Mobile">
         <span className="brand-mark" aria-hidden="true">
           <SquaresFour weight="fill" />
         </span>
         <span className="brand-text">INSPIRATION DRAWER</span>
-        <span className="tablet-badge">TABLET</span>
+        <span className="tablet-badge">MOBILE</span>
       </div>
 
       <button className="project-switcher" type="button" onClick={onProjectsOpen}>

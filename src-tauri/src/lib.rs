@@ -12,6 +12,8 @@ use tauri::Manager;
 use tokio::time::sleep;
 use uuid::Uuid;
 
+mod tablet_update;
+
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_SERVER_URL: &str = "https://api.unmind.art";
 const MAX_REFERENCE_BYTES: usize = 10 * 1024 * 1024;
@@ -371,7 +373,12 @@ async fn generate_server_text(
         )
     };
     let mut messages = Vec::new();
-    if let Some(system_prompt) = input.system_prompt.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(system_prompt) = input
+        .system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         messages.push(json!({ "role": "system", "content": system_prompt }));
     }
     messages.push(json!({ "role": "user", "content": user_content }));
@@ -772,7 +779,7 @@ fn create_http_client() -> Result<Client, String> {
     Client::builder()
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(900))
-        .user_agent(format!("InspirationDrawerTablet/{APP_VERSION}"))
+        .user_agent(format!("InspirationDrawerMobile/{APP_VERSION}"))
         .build()
         .map_err(|error| format!("无法创建网络客户端：{error}"))
 }
@@ -1036,8 +1043,10 @@ async fn download_image(client: &Client, source: &str) -> Result<NativeGenerated
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tablet_update::init_android_installer());
+    builder
         .invoke_handler(tauri::generate_handler![
             request_server_email_code,
             verify_server_email_code,
@@ -1047,6 +1056,8 @@ pub fn run() {
             generate_server_images,
             optimize_server_prompt,
             generate_server_text,
+            tablet_update::check_tablet_update,
+            tablet_update::install_tablet_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

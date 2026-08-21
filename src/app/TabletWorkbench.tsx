@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import type {
   CanvasNodePresetDefinition,
   CanvasGenerationNode,
@@ -36,12 +37,20 @@ import {
 } from "../features/canvas/CanvasStage";
 import { readDeviceImage } from "../features/inspiration/readDeviceImages";
 import { WorkflowLibrary } from "../features/workflow/WorkflowLibrary";
+import { TabletUpdateDialog } from "../features/app-update/TabletUpdateDialog";
 import { TauriImageGenerationService } from "../services/tauriImageGenerationService";
 import { generateTextWithServer } from "../services/tauriTextGenerationService";
 import {
   getServerSession,
   type ServerSession,
 } from "../services/tauriServerSessionService";
+import {
+  checkTabletUpdate,
+  getTabletVersion,
+  installTabletUpdate,
+  type TabletUpdateInfo,
+  type TabletUpdateProgress,
+} from "../services/tabletUpdateService";
 import { tabletStorage } from "../storage/indexedDbStorageService";
 import { createId } from "../utils/id";
 
@@ -53,6 +62,8 @@ const MANAGED_IMAGE_MODEL = {
   model: "nano-banana-pro",
 };
 const THEME_STORAGE_KEY = "inspiration-drawer-tablet-theme";
+const UPDATE_CHECK_STORAGE_KEY = "inspiration-drawer-tablet-update-checked-at";
+const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 
 type ThemeMode = "system" | "light" | "dark";
 
@@ -79,6 +90,13 @@ export function TabletWorkbench() {
   const [nodePresets, setNodePresets] = useState<CanvasNodePresetDefinition[]>([]);
   const [hiddenWorkflowPresetIds, setHiddenWorkflowPresetIds] = useState<string[]>([]);
   const [serverSession, setServerSession] = useState<ServerSession>({ authenticated: false });
+  const [appVersion, setAppVersion] = useState("0.1.0");
+  const [availableUpdate, setAvailableUpdate] = useState<TabletUpdateInfo>();
+  const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState(0);
+  const [updateMessage, setUpdateMessage] = useState<string>();
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
   const [systemDarkMode, setSystemDarkMode] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const [optimizingNodeIds, setOptimizingNodeIds] = useState<Set<string>>(() => new Set());
@@ -124,6 +142,78 @@ export function TabletWorkbench() {
     media.addEventListener("change", handleChange);
     return () => media.removeEventListener("change", handleChange);
   }, []);
+
+  useEffect(() => {
+    void getTabletVersion().then(setAppVersion).catch(() => undefined);
+    let unlisten: (() => void) | undefined;
+    void listen<TabletUpdateProgress>("tablet-update-progress", (event) => {
+      const progress = event.payload;
+      setUpdateProgress(progress.progress);
+      setUpdateMessage(progress.stage === "verified"
+        ? "安全校验通过，正在打开系统安装器"
+        : `正在下载更新 ${progress.progress}%`);
+    }).then((dispose) => {
+      unlisten = dispose;
+    }).catch(() => undefined);
+    return () => unlisten?.();
+  }, []);
+
+  const checkForTabletUpdate = useCallback(async (silent = false) => {
+    if (isCheckingUpdate) return;
+    setIsCheckingUpdate(true);
+    try {
+      const result = await checkTabletUpdate();
+      setAvailableUpdate(result.available ? result : undefined);
+      if (result.available) {
+        setUpdateMessage(undefined);
+        setUpdateProgress(0);
+        setIsUpdateDialogOpen(true);
+      } else if (!silent) {
+        setNotice({ tone: "success", message: `当前已是最新版本 ${result.currentVersion}` });
+      }
+    } catch (error) {
+      if (!silent) {
+        setNotice({ tone: "error", message: getErrorMessage(error, "检查更新失败") });
+      }
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  }, [isCheckingUpdate]);
+
+  useEffect(() => {
+    const lastCheckedAt = Number(window.localStorage.getItem(UPDATE_CHECK_STORAGE_KEY) ?? 0);
+    const elapsed = Number.isFinite(lastCheckedAt) ? Date.now() - lastCheckedAt : UPDATE_CHECK_INTERVAL_MS;
+    const delay = lastCheckedAt > 0
+      ? Math.max(1_000, UPDATE_CHECK_INTERVAL_MS - elapsed)
+      : 15_000;
+    const timer = window.setTimeout(() => {
+      window.localStorage.setItem(UPDATE_CHECK_STORAGE_KEY, String(Date.now()));
+      void checkForTabletUpdate(true);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [checkForTabletUpdate]);
+
+  const beginTabletUpdate = async () => {
+    if (!availableUpdate || isInstallingUpdate) return;
+    setIsInstallingUpdate(true);
+    setUpdateProgress(0);
+    setUpdateMessage("正在准备更新包");
+    try {
+      const result = await installTabletUpdate(availableUpdate.version);
+      if (result.permissionRequired) {
+        setUpdateMessage("请允许“安装未知应用”，返回后再次点击下载并安装");
+      } else if (result.installerLaunched) {
+        setUpdateProgress(100);
+        setUpdateMessage("系统安装器已打开，请确认升级");
+      }
+    } catch (error) {
+      const message = getErrorMessage(error, "安装更新失败");
+      setUpdateMessage(message);
+      setNotice({ tone: "error", message });
+    } finally {
+      setIsInstallingUpdate(false);
+    }
+  };
 
   const isDarkMode = themeMode === "dark" || (themeMode === "system" && systemDarkMode);
 
@@ -1094,8 +1184,20 @@ export function TabletWorkbench() {
       <AccountDialog
         open={isAccountDialogOpen}
         session={serverSession}
+        appVersion={appVersion}
+        checkingUpdate={isCheckingUpdate}
+        onCheckUpdate={() => void checkForTabletUpdate(false)}
         onClose={() => setIsAccountDialogOpen(false)}
         onSessionChange={setServerSession}
+      />
+      <TabletUpdateDialog
+        open={isUpdateDialogOpen}
+        update={availableUpdate}
+        installing={isInstallingUpdate}
+        progress={updateProgress}
+        message={updateMessage}
+        onClose={() => setIsUpdateDialogOpen(false)}
+        onInstall={() => void beginTabletUpdate()}
       />
     </main>
   );

@@ -29,7 +29,7 @@ interface ServerImageReference {
 }
 
 /**
- * The tablet never receives provider API keys or provider-specific endpoints.
+ * The mobile app never receives provider API keys or provider-specific endpoints.
  * It sends stable public model IDs to the Inspiration Drawer application server,
  * where the same XAIS / New API / Bigmodel routes as the desktop client are selected.
  */
@@ -42,10 +42,10 @@ export class TauriImageGenerationService implements ImageGenerationService {
     assertNotAborted(context.signal);
 
     if (request.model.provider !== "server-gateway") {
-      throw new Error("平板端只能通过 Inspiration Drawer 服务端网关生图");
+      throw new Error("移动端只能通过 Inspiration Drawer 服务端网关生图");
     }
     if (!isImageModelPresetId(request.model.model)) {
-      throw new Error("请选择平板端预设的生图模型");
+      throw new Error("请选择移动端预设的生图模型");
     }
 
     const references = await Promise.all(

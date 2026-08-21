@@ -1,6 +1,6 @@
-# Inspiration Drawer Tablet
+# Inspiration Drawer Mobile
 
-独立的 Android 平板 AI 工业设计工作台。此仓库与 Windows 桌面端完全分离。
+独立的 Android 手机/平板 AI 工业设计工作台。此仓库与 Windows 桌面端完全分离。
 
 ## 当前能力
 

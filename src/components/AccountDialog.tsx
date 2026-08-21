@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ArrowLeft, CheckCircle, EnvelopeSimple, SignOut, Ticket, UserCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowLeft, CheckCircle, EnvelopeSimple, SignOut, Ticket, UserCircle, X } from "@phosphor-icons/react";
 import type { EmailCodeChallenge, ServerSession } from "../services/tauriServerSessionService";
 import {
   logoutServerSession,
@@ -11,14 +11,20 @@ import {
 interface AccountDialogProps {
   open: boolean;
   session: ServerSession;
+  appVersion: string;
+  checkingUpdate: boolean;
   onClose: () => void;
+  onCheckUpdate: () => void;
   onSessionChange: (session: ServerSession) => void;
 }
 
 export function AccountDialog({
   open,
   session,
+  appVersion,
+  checkingUpdate,
   onClose,
+  onCheckUpdate,
   onSessionChange,
 }: AccountDialogProps) {
   const [email, setEmail] = useState("");
@@ -139,7 +145,7 @@ export function AccountDialog({
               </span>
             </div>
             <div className="credit-balance">
-              <small>桌面端与平板端共享额度</small>
+              <small>桌面端与移动端共享额度</small>
               <strong>{formatCredits(session.availableCredits)}</strong>
               <span>可用积分</span>
             </div>
@@ -218,9 +224,16 @@ export function AccountDialog({
             <button className="account-submit-action" type="submit" disabled={busy || !email.trim()}>
               {busy ? "正在发送" : "发送邮箱验证码"}
             </button>
-            <small className="account-security-note">渠道与 API 密钥只保存在服务端，不会写入平板。</small>
+            <small className="account-security-note">渠道与 API 密钥只保存在服务端，不会写入移动设备。</small>
           </form>
         )}
+        <footer className="account-update-footer">
+          <span>Inspiration Drawer Mobile v{appVersion}</span>
+          <button type="button" onClick={onCheckUpdate} disabled={checkingUpdate}>
+            <ArrowClockwise className={checkingUpdate ? "is-spinning" : ""} />
+            {checkingUpdate ? "检查中" : "检查更新"}
+          </button>
+        </footer>
       </section>
     </div>
   );
