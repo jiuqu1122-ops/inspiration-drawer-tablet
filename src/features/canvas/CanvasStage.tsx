@@ -101,6 +101,11 @@ type Gesture =
       currentWorld: CanvasPoint;
       targetNodeId?: string;
       moved: boolean;
+    }
+  | {
+      mode: "connection-menu";
+      pointerId: number;
+      startPoint: CanvasPoint;
     };
 
 interface ConnectionDraft {
@@ -122,11 +127,6 @@ interface ConnectionMenuState {
   kind: "image" | "rule" | "text" | "generation";
   left: number;
   top: number;
-}
-
-interface ConnectionPressState {
-  pointerId: number;
-  origin: CanvasPoint;
 }
 
 const MIN_SCALE = 0.2;
@@ -166,7 +166,6 @@ export function CanvasStage({
   const longPressTimerRef = useRef<number | undefined>(undefined);
   const longPressOriginRef = useRef<CanvasPoint | undefined>(undefined);
   const connectionPressTimerRef = useRef<number | undefined>(undefined);
-  const connectionPressRef = useRef<ConnectionPressState | undefined>(undefined);
   const connectionLayoutFrameRef = useRef<number | undefined>(undefined);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
   const [connectionMenu, setConnectionMenu] = useState<ConnectionMenuState>();
@@ -239,7 +238,6 @@ export function CanvasStage({
   const clearConnectionPress = useCallback(() => {
     window.clearTimeout(connectionPressTimerRef.current);
     connectionPressTimerRef.current = undefined;
-    connectionPressRef.current = undefined;
   }, []);
 
   const getStagePointFromClient = (clientX: number, clientY: number): CanvasPoint => {
@@ -356,25 +354,6 @@ export function CanvasStage({
     onSelectNode(sourceNode.id);
   };
 
-  const beginConnectionLongPress = (
-    event: ReactPointerEvent<SVGPathElement>,
-    connection: (typeof connections)[number],
-  ) => {
-    if (event.button !== 0 && event.pointerType === "mouse") return;
-    event.stopPropagation();
-    clearConnectionPress();
-    setContextMenu(undefined);
-    setConnectionMenu(undefined);
-    const origin = getStagePointFromClient(event.clientX, event.clientY);
-    connectionPressRef.current = { pointerId: event.pointerId, origin };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    connectionPressTimerRef.current = window.setTimeout(() => {
-      showConnectionMenu(connection, origin);
-      connectionPressTimerRef.current = undefined;
-      connectionPressRef.current = undefined;
-    }, LONG_PRESS_MS);
-  };
-
   function showConnectionMenu(
     connection: (typeof connections)[number],
     point: CanvasPoint,
@@ -388,20 +367,6 @@ export function CanvasStage({
       top: point.y,
     });
   }
-
-  const moveConnectionLongPress = (event: ReactPointerEvent<SVGPathElement>) => {
-    const press = connectionPressRef.current;
-    if (!press || press.pointerId !== event.pointerId) return;
-    const point = getStagePointFromClient(event.clientX, event.clientY);
-    if (getDistance(press.origin, point) > 10) clearConnectionPress();
-  };
-
-  const finishConnectionLongPress = (event: ReactPointerEvent<SVGPathElement>) => {
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    clearConnectionPress();
-  };
 
   const deleteConnection = (menu: ConnectionMenuState) => {
     const source = nodesById.get(menu.sourceNodeId);
@@ -432,6 +397,7 @@ export function CanvasStage({
 
     if (activePointersRef.current.size >= 2) {
       clearLongPress();
+      clearConnectionPress();
       const currentGesture = gestureRef.current;
       if (currentGesture?.mode === "drag") {
         onNodeMove(currentGesture.nodeId, currentGesture.currentNode);
@@ -465,6 +431,25 @@ export function CanvasStage({
       return;
     }
 
+    const nearbyConnection = findNearbyConnection(
+      stageToWorld(point),
+      renderedConnections,
+      20 / Math.max(liveViewportRef.current.scale, MIN_SCALE),
+    );
+    if (nearbyConnection) {
+      clearConnectionPress();
+      gestureRef.current = {
+        mode: "connection-menu",
+        pointerId: event.pointerId,
+        startPoint: point,
+      };
+      connectionPressTimerRef.current = window.setTimeout(() => {
+        showConnectionMenu(nearbyConnection, point);
+        connectionPressTimerRef.current = undefined;
+      }, LONG_PRESS_MS);
+      return;
+    }
+
     setConnectionSourceId(undefined);
     setConnectionDraft(undefined);
     onSelectNode(undefined);
@@ -484,6 +469,11 @@ export function CanvasStage({
     const point = getStagePoint(event);
     activePointersRef.current.set(event.pointerId, point);
     const gesture = gestureRef.current;
+
+    if (gesture?.mode === "connection-menu" && gesture.pointerId === event.pointerId) {
+      if (getDistance(gesture.startPoint, point) > 10) clearConnectionPress();
+      return;
+    }
 
     if (gesture?.mode === "connect" && gesture.pointerId === event.pointerId) {
       const targetNodeId = findConnectionTargetAtPoint(event.clientX, event.clientY);
@@ -587,6 +577,13 @@ export function CanvasStage({
       return;
     }
 
+    if (gesture?.mode === "connection-menu" && gesture.pointerId === event.pointerId) {
+      clearConnectionPress();
+      gestureRef.current = undefined;
+      onViewportChange({ ...liveViewportRef.current });
+      return;
+    }
+
     if (gesture?.mode === "drag" && gesture.pointerId === event.pointerId) {
       onNodeMove(gesture.nodeId, gesture.currentNode);
     }
@@ -645,14 +642,6 @@ export function CanvasStage({
                   role="button"
                   tabIndex={0}
                   aria-label={`连线：${source.title} 到 ${target.title}，长按删除`}
-                  onPointerDown={(event) => beginConnectionLongPress(event, connection)}
-                  onPointerMove={moveConnectionLongPress}
-                  onPointerUp={finishConnectionLongPress}
-                  onPointerCancel={finishConnectionLongPress}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    showConnectionMenu(connection, getStagePointFromClient(event.clientX, event.clientY));
-                  }}
                   onKeyDown={(event) => {
                     if (event.key !== "Enter" && event.key !== " ") return;
                     event.preventDefault();
@@ -1332,6 +1321,69 @@ function getOutputPoint(node: CanvasNode): CanvasPoint {
 
 function getInputPoint(node: CanvasGenerationNode | CanvasTextNode): CanvasPoint {
   return { x: node.x - 8, y: node.y + 76 };
+}
+
+function findNearbyConnection<T extends { start: CanvasPoint; end: CanvasPoint }>(
+  point: CanvasPoint,
+  connections: T[],
+  tolerance: number,
+): T | undefined {
+  let nearest: { connection: T; distance: number } | undefined;
+  for (const connection of connections) {
+    const distance = distanceToConnectionCurve(point, connection.start, connection.end);
+    if (distance <= tolerance && (!nearest || distance < nearest.distance)) {
+      nearest = { connection, distance };
+    }
+  }
+  return nearest?.connection;
+}
+
+function distanceToConnectionCurve(point: CanvasPoint, start: CanvasPoint, end: CanvasPoint): number {
+  const bend = Math.max(Math.abs(end.x - start.x) * 0.46, 70);
+  const firstControl = { x: start.x + bend, y: start.y };
+  const secondControl = { x: end.x - bend, y: end.y };
+  let minimum = Number.POSITIVE_INFINITY;
+  let previous = start;
+  for (let index = 1; index <= 32; index += 1) {
+    const t = index / 32;
+    const current = cubicBezierPoint(start, firstControl, secondControl, end, t);
+    minimum = Math.min(minimum, distanceToSegment(point, previous, current));
+    previous = current;
+  }
+  return minimum;
+}
+
+function cubicBezierPoint(
+  start: CanvasPoint,
+  firstControl: CanvasPoint,
+  secondControl: CanvasPoint,
+  end: CanvasPoint,
+  t: number,
+): CanvasPoint {
+  const inverse = 1 - t;
+  return {
+    x: inverse ** 3 * start.x
+      + 3 * inverse ** 2 * t * firstControl.x
+      + 3 * inverse * t ** 2 * secondControl.x
+      + t ** 3 * end.x,
+    y: inverse ** 3 * start.y
+      + 3 * inverse ** 2 * t * firstControl.y
+      + 3 * inverse * t ** 2 * secondControl.y
+      + t ** 3 * end.y,
+  };
+}
+
+function distanceToSegment(point: CanvasPoint, start: CanvasPoint, end: CanvasPoint): number {
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  const lengthSquared = deltaX * deltaX + deltaY * deltaY;
+  if (lengthSquared === 0) return getDistance(point, start);
+  const t = clamp(
+    ((point.x - start.x) * deltaX + (point.y - start.y) * deltaY) / lengthSquared,
+    0,
+    1,
+  );
+  return getDistance(point, { x: start.x + t * deltaX, y: start.y + t * deltaY });
 }
 
 function createConnectionPath(start: CanvasPoint, end: CanvasPoint): string {

@@ -339,7 +339,7 @@ select:focus-visible {
   width: 1px;
   height: 1px;
   overflow: visible;
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .node-connection-halo,
@@ -369,7 +369,7 @@ select:focus-visible {
   stroke: transparent;
   stroke-linecap: round;
   stroke-width: 30;
-  pointer-events: stroke;
+  pointer-events: none;
   touch-action: none;
   vector-effect: non-scaling-stroke;
 }
