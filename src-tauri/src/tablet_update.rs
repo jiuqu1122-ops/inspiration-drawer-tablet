@@ -12,8 +12,8 @@ use tokio::{
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const UPDATE_MANIFEST_ENDPOINTS: &[(&str, &str)] = &[
     (
-        "OSS",
-        "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/mobile/latest-mobile.json",
+        "API",
+        "https://api.unmind.art/v1/mobile/latest",
     ),
     (
         "Gitee",
