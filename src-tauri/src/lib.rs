@@ -13,12 +13,16 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 mod tablet_update;
+mod tablet_media;
+mod tablet_keep_alive;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_SERVER_URL: &str = "https://api.unmind.art";
 const MAX_REFERENCE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_GENERATED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const AUTH_STORE_FILENAME: &str = "server-auth.json";
+// Keep the Android release binary rebuildable when the embedded frontend changes.
+// Tablet-only UI updates are packaged into this same native asset bundle.
 
 static AUTH_TOKENS: OnceLock<Mutex<Option<AuthTokens>>> = OnceLock::new();
 
@@ -97,6 +101,15 @@ struct GenerateServerImagesInput {
     resolution: String,
     count: u8,
     references: Vec<ServerImageReference>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoverServerImagesInput {
+    request_id: String,
+    count: u8,
+    #[serde(default)]
+    max_wait_seconds: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -304,7 +317,30 @@ async fn generate_server_images(
     }
     let mut images = Vec::with_capacity(sources.len());
     for source in sources.into_iter().take(input.count.clamp(1, 4) as usize) {
-        images.push(resolve_image_source(&client, &source).await?);
+        images.push(resolve_image_source_with_retry(&client, &source).await?);
+    }
+    Ok(images)
+}
+
+#[tauri::command]
+async fn recover_server_images(
+    app: tauri::AppHandle,
+    input: RecoverServerImagesInput,
+) -> Result<Vec<NativeGeneratedImage>, String> {
+    if input.request_id.trim().len() < 8 || !(1..=4).contains(&input.count) {
+        return Err("鐢熷浘鎭㈠璇锋眰鏃犳晥".to_string());
+    }
+    let client = create_http_client()?;
+    let max_wait_seconds = input.max_wait_seconds.unwrap_or(60).clamp(5, 900);
+    let attempts = (max_wait_seconds / 2).max(1) as usize;
+    let payload = recover_image_generation(&app, &client, &input.request_id, attempts).await?;
+    let sources = collect_image_sources(&payload);
+    if sources.is_empty() {
+        return Err("鏈嶅姟绔湁浠诲姟鐘舵€佷絾娌℃湁杩斿洖鍥剧墖".to_string());
+    }
+    let mut images = Vec::new();
+    for source in sources.into_iter().take(input.count as usize) {
+        images.push(resolve_image_source_with_retry(&client, &source).await?);
     }
     Ok(images)
 }
@@ -320,7 +356,7 @@ async fn optimize_server_prompt(
     }
     let client = create_http_client()?;
     let client_request_id = format!("tablet-prompt-{}", Uuid::new_v4());
-    let system_prompt = "你是 Inspiration Drawer 的工业设计生图提示词优化器。保留用户原意，将提示词优化成一段可直接用于图片生成的中文提示词，明确产品形态、结构、CMF、材质、光线、构图和工业设计渲染品质。只返回优化后的提示词，不要解释。";
+    let system_prompt = "你是 Inspiration Drawer 的通用图片生成提示词优化器。用户可以生成任何题材的图片，包括人物、动物、场景、建筑、产品、插画、海报和抽象视觉等。保留用户原意，不要把题材改成产品设计；根据用户实际内容补充合适的主体、环境、风格、构图、镜头、光线、色彩、材质和细节。只返回一段可直接用于图片生成的中文提示词，不要解释。";
     let body = json!({
         "clientRequestId": client_request_id,
         "messages": [
@@ -462,7 +498,10 @@ async fn submit_image_generation(
         "inputImages": input_images,
         "aspectRatio": input.aspect_ratio,
         "resolution": input.resolution,
-        "outputFormat": "png",
+        // PNG is treated by the gateway as a transparent/chroma-key request for
+        // GPT Image 2. The tablet generator has no transparency control, so use
+        // JPEG for ordinary image generation instead.
+        "outputFormat": "jpg",
         "count": input.count,
     });
     match authenticated_json_request(
@@ -518,7 +557,7 @@ async fn recover_image_generation(
             _ => {}
         }
     }
-    Err("生图任务仍在服务端处理中，请稍后重试当前节点".to_string())
+    Err("IMAGE_RECOVERY_PENDING".to_string())
 }
 
 async fn poll_agent_task(
@@ -868,10 +907,7 @@ fn validate_generation_input(input: &GenerateServerImagesInput) -> Result<(), St
     ) {
         return Err("服务端不接受该公开模型".to_string());
     }
-    if !matches!(
-        input.aspect_ratio.as_str(),
-        "1:1" | "3:4" | "4:3" | "9:16" | "16:9"
-    ) {
+    if !is_valid_aspect_ratio(&input.model, &input.resolution, &input.aspect_ratio) {
         return Err("请选择有效的图片比例".to_string());
     }
     if !matches!(
@@ -892,6 +928,29 @@ fn validate_generation_input(input: &GenerateServerImagesInput) -> Result<(), St
         }
     }
     Ok(())
+}
+
+fn is_valid_aspect_ratio(model: &str, resolution: &str, value: &str) -> bool {
+    if matches!(value, "1:1" | "3:4" | "4:3" | "9:16" | "16:9") {
+        return true;
+    }
+    if model != "gpt-image-2" {
+        return false;
+    }
+    let allowed: &[&str] = match resolution.to_ascii_lowercase().as_str() {
+        "2k" => &[
+            "2048x2048", "2048x1152", "1152x2048", "2064x1376", "1376x2064",
+            "2048x1536", "1536x2048", "2016x864", "864x2016", "2080x1664",
+            "1664x2080", "2048x1024", "2064x688",
+        ],
+        "4k" => &[
+            "2880x2880", "3840x2160", "2160x3840", "3520x2352", "2352x3520",
+            "3312x2480", "2480x3312", "3840x1648", "1648x3840", "3216x2576",
+            "2576x3216", "3840x1920", "3840x1280", "1280x3840",
+        ],
+        _ => return false,
+    };
+    allowed.contains(&value)
 }
 
 fn normalize_reference_mime(input: &str) -> Result<&'static str, String> {
@@ -1001,6 +1060,23 @@ async fn resolve_image_source(
     })
 }
 
+async fn resolve_image_source_with_retry(
+    client: &Client,
+    source: &str,
+) -> Result<NativeGeneratedImage, String> {
+    let mut last_error = String::new();
+    for attempt in 0..3 {
+        if attempt > 0 {
+            sleep(Duration::from_secs(1)).await;
+        }
+        match resolve_image_source(client, source).await {
+            Ok(image) => return Ok(image),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
 async fn download_image(client: &Client, source: &str) -> Result<NativeGeneratedImage, String> {
     let url = Url::parse(source).map_err(|_| "生成图片地址格式不正确".to_string())?;
     if url.scheme() != "https" && !(url.scheme() == "http" && is_local_host(&url)) {
@@ -1046,6 +1122,10 @@ pub fn run() {
     let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
     #[cfg(target_os = "android")]
     let builder = builder.plugin(tablet_update::init_android_installer());
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tablet_media::init_android_media());
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tablet_keep_alive::init_android_keep_alive());
     builder
         .invoke_handler(tauri::generate_handler![
             request_server_email_code,
@@ -1054,6 +1134,10 @@ pub fn run() {
             logout_server_session,
             redeem_server_credit_code,
             generate_server_images,
+            recover_server_images,
+            tablet_media::save_image_to_gallery,
+            tablet_media::share_image,
+            tablet_keep_alive::set_generation_keep_alive,
             optimize_server_prompt,
             generate_server_text,
             tablet_update::check_tablet_update,

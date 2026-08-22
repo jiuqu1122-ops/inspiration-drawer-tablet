@@ -8,7 +8,7 @@ import type {
 } from "../../shared";
 import {
   buildImageRulePrompt,
-  buildIndustrialDesignPrompt,
+  buildImageGenerationPrompt,
   isImageModelPresetId,
 } from "../../shared";
 import { createId } from "../utils/id";
@@ -40,7 +40,9 @@ export class TauriImageGenerationService implements ImageGenerationService {
   ): Promise<GeneratedImageResult[]> {
     assertTauriRuntime();
     assertNotAborted(context.signal);
+    await setGenerationKeepAlive(true);
 
+    try {
     if (request.model.provider !== "server-gateway") {
       throw new Error("移动端只能通过 Inspiration Drawer 服务端网关生图");
     }
@@ -53,35 +55,115 @@ export class TauriImageGenerationService implements ImageGenerationService {
     );
     assertNotAborted(context.signal);
 
+    const aspectRatio = normalizeGatewayAspectRatio(request.aspectRatio);
     const rulePrompt = buildImageRulePrompt(context.rules);
-    const prompt = buildIndustrialDesignPrompt([
+    const basePrompt = buildImageGenerationPrompt([
       request.prompt,
       rulePrompt,
       references.length
         ? `Reference material count: ${references.length}. Preserve connected references as the visual direction.`
         : "No reference images are connected.",
-      `Target aspect ratio: ${request.aspectRatio}. Detail tier: ${request.resolution}.`,
+      `Target aspect ratio: ${aspectRatio}. Detail tier: ${request.resolution}.`,
     ].filter(Boolean).join("\n\n"));
-    const images = await invoke<NativeGeneratedImage[]>("generate_server_images", {
-      input: {
-        requestId: request.id,
-        model: request.model.model,
-        prompt,
-        aspectRatio: request.aspectRatio,
-        resolution: request.resolution,
-        count: request.count,
-        references,
-      },
+    const count = Math.min(4, Math.max(1, Math.round(request.count)));
+    const tasks = Array.from({ length: count }, (_, index) => {
+      // The gateway deduplicates by clientRequestId. A separate ID per image is
+      // therefore required; sending count=2 on one request creates one task.
+      const taskRequestId = count === 1 ? request.id : `${request.id}-${index + 1}`;
+      const variationPrompt = count === 1
+        ? ""
+        : `Variation ${index + 1} of ${count}: produce a distinct alternative design. Do not duplicate another variation.`;
+      return this.generateSingle(
+        {
+          requestId: taskRequestId,
+          model: request.model.model,
+          prompt: [basePrompt, variationPrompt].filter(Boolean).join("\n\n"),
+          aspectRatio,
+          resolution: request.resolution,
+          references,
+        },
+        request.id,
+        context.signal,
+      );
     });
-    assertNotAborted(context.signal);
+
+    const results = await Promise.all(tasks);
+    return results.flat();
+    } finally {
+      await setGenerationKeepAlive(false);
+    }
+  }
+
+  private async generateSingle(
+    input: {
+      requestId: string;
+      model: string;
+      prompt: string;
+      aspectRatio: string;
+      resolution: ImageGenerationRequest["resolution"];
+      references: ServerImageReference[];
+    },
+    parentRequestId: string,
+    signal?: AbortSignal,
+  ): Promise<GeneratedImageResult[]> {
+    assertNotAborted(signal);
+    let images: NativeGeneratedImage[];
+    try {
+      images = await invoke<NativeGeneratedImage[]>("generate_server_images", {
+        input: { ...input, count: 1 },
+      });
+    } catch (generationError) {
+      // Android may suspend the WebView while the native request continues.
+      // Recover this individual task instead of retrying a shared parent ID.
+      if (signal?.aborted) throw generationError;
+      try {
+        images = await invoke<NativeGeneratedImage[]>("recover_server_images", {
+          input: { requestId: input.requestId, count: 1, maxWaitSeconds: 90 },
+        });
+      } catch {
+        throw generationError;
+      }
+    }
+    assertNotAborted(signal);
 
     return images.map((image) => ({
       id: createId("generated-result"),
-      requestId: request.id,
+      requestId: parentRequestId,
       uri: image.dataUri,
       mimeType: image.mimeType,
       createdAt: Date.now(),
     }));
+  }
+
+  async recover(
+    requestId: string,
+    count: number,
+    options: { maxWaitSeconds?: number } = {},
+  ): Promise<GeneratedImageResult[]> {
+    assertTauriRuntime();
+    await setGenerationKeepAlive(true);
+    try {
+      const safeCount = Math.min(4, Math.max(1, Math.round(count)));
+      const requestIds = safeCount === 1
+        ? [requestId]
+        : Array.from({ length: safeCount }, (_, index) => `${requestId}-${index + 1}`);
+      const images = (await Promise.all(requestIds.map((taskRequestId) => invoke<NativeGeneratedImage[]>("recover_server_images", {
+        input: {
+          requestId: taskRequestId,
+          count: 1,
+          maxWaitSeconds: options.maxWaitSeconds ?? 900,
+        },
+      })))).flat();
+      return images.map((image) => ({
+        id: createId("generated-result"),
+        requestId,
+        uri: image.dataUri,
+        mimeType: image.mimeType,
+        createdAt: Date.now(),
+      }));
+    } finally {
+      await setGenerationKeepAlive(false);
+    }
   }
 
   async optimizePrompt(prompt: string): Promise<string> {
@@ -101,6 +183,22 @@ export class TauriImageGenerationService implements ImageGenerationService {
   }
 }
 
+function normalizeGatewayAspectRatio(value: string): "1:1" | "3:4" | "4:3" | "9:16" | "16:9" {
+  const clean = String(value || "").trim().replace(/[^0-9:]/g, "x");
+  if (["1:1", "3:4", "4:3", "9:16", "16:9"].includes(clean)) {
+    return clean as "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
+  }
+  const [width, height] = clean.split(/[x:]/).map(Number);
+  const target = width > 0 && height > 0 ? width / height : 16 / 9;
+  return (["1:1", "3:4", "4:3", "9:16", "16:9"] as const).reduce((best, candidate) => {
+    const [bestW, bestH] = best.split(":").map(Number);
+    const [candidateW, candidateH] = candidate.split(":").map(Number);
+    return Math.abs(candidateW / candidateH - target) < Math.abs(bestW / bestH - target)
+      ? candidate
+      : best;
+  }, "16:9");
+}
+
 function assertTauriRuntime(): void {
   if (!isTauri()) {
     throw new Error("该功能需要在 Android 应用中运行");
@@ -110,6 +208,24 @@ function assertTauriRuntime(): void {
 function assertNotAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new DOMException("生成任务已取消", "AbortError");
+  }
+}
+
+let keepAliveUsers = 0;
+
+async function setGenerationKeepAlive(active: boolean): Promise<void> {
+  if (!isTauri()) return;
+  if (active) {
+    keepAliveUsers += 1;
+    if (keepAliveUsers !== 1) return;
+  } else {
+    keepAliveUsers = Math.max(0, keepAliveUsers - 1);
+    if (keepAliveUsers !== 0) return;
+  }
+  try {
+    await invoke("set_generation_keep_alive", { input: { active } });
+  } catch {
+    // The resume recovery path still works if the optional native service is unavailable.
   }
 }
 

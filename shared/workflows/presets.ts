@@ -2,10 +2,10 @@ import type { WorkflowDefinition, WorkflowImageNodeDefinition, WorkflowTextNodeD
 
 const CREATED_AT = 1_786_972_800_000;
 
-const INDUSTRIAL_LLM_SYSTEM_PROMPT = [
-  "你是 Inspiration Drawer 的工业设计文字 LLM 节点。",
+const IMAGE_CREATION_LLM_SYSTEM_PROMPT = [
+  "你是 Inspiration Drawer 的图片创作文字 LLM 节点。",
   "只根据当前节点指令和上游文字结果工作，不扮演 Agent，不调用工具，不输出思维过程。",
-  "输出可直接交给后续生图节点使用的中文 Markdown，明确产品形态、结构、CMF、场景、构图和禁止项。",
+  "输出可直接交给后续生图节点使用的中文 Markdown，按实际题材明确主体、环境、风格、构图、光线、色彩、材质、细节和禁止项。",
 ].join("\n");
 
 const image = (
@@ -45,7 +45,7 @@ const text = (
   title,
   description,
   prompt,
-  systemPrompt: INDUSTRIAL_LLM_SYSTEM_PROMPT,
+  systemPrompt: IMAGE_CREATION_LLM_SYSTEM_PROMPT,
   inputs,
   x,
   y,

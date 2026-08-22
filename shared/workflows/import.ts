@@ -8,9 +8,9 @@ import type {
 } from "./types";
 
 const DEFAULT_TEXT_SYSTEM_PROMPT = [
-  "你是 Inspiration Drawer 的工业设计文字 LLM 节点。",
+  "你是 Inspiration Drawer 的图片创作文字 LLM 节点。",
   "根据当前节点指令和上游结果工作，不调用 Agent 或外部工具。",
-  "只输出可直接交给下游文字或生图节点使用的内容。",
+  "只输出可直接交给下游文字或生图节点使用的内容，不限制题材类型。",
 ].join("\n");
 
 export interface CanvasTemplateImportResult {

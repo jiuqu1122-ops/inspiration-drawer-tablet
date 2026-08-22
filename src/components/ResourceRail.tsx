@@ -1,5 +1,6 @@
 import {
   Check,
+  DownloadSimple,
   Folders,
   ImageSquare,
   MagnifyingGlass,
@@ -22,6 +23,7 @@ interface ResourceRailProps {
   projects: CanvasProject[];
   activeProjectId: string;
   onAssetSelect: (assetId: string) => void;
+  onAssetSave: (assetId: string) => void;
   onAssetRemove: (assetId: string) => void;
   onProjectCreate: () => void;
   onProjectSelect: (projectId: string) => void;
@@ -48,6 +50,7 @@ export function ResourceRail({
   projects,
   activeProjectId,
   onAssetSelect,
+  onAssetSave,
   onAssetRemove,
   onProjectCreate,
   onProjectSelect,
@@ -113,7 +116,7 @@ export function ResourceRail({
             </label>
             <div className="resource-groups">
               <ResourceGroup label="设备素材" assets={importedAssets} onAssetSelect={onAssetSelect} onAssetRemove={onAssetRemove} onImport={onImport} />
-              <ResourceGroup label="生成结果" assets={generatedAssets} onAssetSelect={onAssetSelect} />
+              <ResourceGroup label="生成结果" assets={generatedAssets} onAssetSelect={onAssetSelect} onAssetSave={onAssetSave} onAssetRemove={onAssetRemove} />
             </div>
           </>
         ) : active === "projects" ? (
@@ -197,12 +200,14 @@ function ResourceGroup({
   label,
   assets,
   onAssetSelect,
+  onAssetSave,
   onAssetRemove,
   onImport,
 }: {
   label: string;
   assets: CanvasAssetView[];
   onAssetSelect: (assetId: string) => void;
+  onAssetSave?: (assetId: string) => void;
   onAssetRemove?: (assetId: string) => void;
   onImport?: () => void;
 }) {
@@ -234,6 +239,17 @@ function ResourceGroup({
                   onClick={() => onAssetRemove(asset.id)}
                 >
                   <Trash />
+                </button>
+              )}
+              {onAssetSave && (
+                <button
+                  className="asset-save-action"
+                  type="button"
+                  title={`保存 ${asset.name} 到相册`}
+                  aria-label={`保存生成结果 ${asset.name} 到相册`}
+                  onClick={() => onAssetSave(asset.id)}
+                >
+                  <DownloadSimple />
                 </button>
               )}
             </div>

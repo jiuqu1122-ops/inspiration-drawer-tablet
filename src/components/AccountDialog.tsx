@@ -218,7 +218,7 @@ export function AccountDialog({
             </label>
             <label>
               <span>昵称 <small>仅首次注册需要</small></span>
-              <input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} minLength={2} maxLength={32} placeholder="工业设计师" />
+              <input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} minLength={2} maxLength={32} placeholder="创作者" />
             </label>
             {error && <p className="dialog-error" role="alert">{error}</p>}
             <button className="account-submit-action" type="submit" disabled={busy || !email.trim()}>

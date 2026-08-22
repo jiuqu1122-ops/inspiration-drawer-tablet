@@ -17,11 +17,13 @@ Debug APKs and production APKs normally have different signatures. Uninstall the
 
    `npm run tauri android build -- --apk --target aarch64`
 
-3. Upload the APK to the stable OSS object `mobile/Inspiration-Drawer-Mobile-arm64.apk`.
+3. Upload the APK to the stable OSS object `mobile/Inspiration-Drawer-Mobile-arm64.apk`. The object can remain private; the API serves it through `https://api.unmind.art/v1/mobile/apk`.
 4. Generate the mobile manifest using the final HTTPS APK URL:
 
    `npm run android:update:manifest -- --apk <signed-apk-path> --url <https-apk-url> --notes-file <release-notes-file>`
 
-5. Upload `release/latest-mobile.json` to `mobile/latest-mobile.json` on OSS. Gitee and GitHub may mirror the same two files under the `mobile-latest` tag.
+5. Upload `release/latest-mobile.json` to `mobile/latest-mobile.json` on OSS. Gitee and GitHub may mirror the same two files under the `mobile-latest` tag. The mobile app checks `https://api.unmind.art/v1/mobile/latest` first, which rewrites the APK URL to the server proxy.
 
 The application checks OSS first, then Gitee and GitHub as fallback mirrors. It validates the declared size and SHA-256 while downloading. Android then verifies the package name and the signing certificate before showing the system installer. The user must approve the final system installation; Android does not allow a normal sideloaded app to silently replace itself.
+
+The tablet app performs an automatic update check once every 24 hours and also checks again when it returns to the foreground if the previous check is older than one day.

@@ -1,10 +1,14 @@
 import {
+  ArrowLeft,
+  ArrowRight,
   DotsThree,
+  DownloadSimple,
   HandTap,
   ImageSquare,
   Link,
   MagicWand,
   Play,
+  ShareNetwork,
   SlidersHorizontal,
   TextT,
   Trash,
@@ -19,6 +23,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   getImageAspectRatioOptions,
   getImageModelPreset,
@@ -38,6 +43,7 @@ import {
   type ImageRulePresetId,
   type ImageRuleState,
 } from "../../../shared";
+import { saveImageToGallery, shareImage } from "../../services/tabletMediaService";
 
 export interface CanvasAssetView {
   asset: ImageAsset;
@@ -66,6 +72,8 @@ interface CanvasStageProps {
   onRunTextNode: (nodeId: string) => void;
   onOptimizePrompt: (nodeId: string) => void;
   onRunGeneration: (nodeId: string) => void;
+  onGeneratedResultSave: (assetId: string) => void;
+  onGeneratedResultRemove: (assetId: string) => void;
   onConnect: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectReference: (targetNodeId: string, assetId: string) => void;
   onDisconnectRule: (targetNodeId: string, ruleNodeId: string) => void;
@@ -129,6 +137,13 @@ interface ConnectionMenuState {
   top: number;
 }
 
+interface ImagePreviewState {
+  items: CanvasAssetView[];
+  index: number;
+  busy: "save" | "share" | undefined;
+  error?: string;
+}
+
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 4;
 const LONG_PRESS_MS = 520;
@@ -152,6 +167,8 @@ export function CanvasStage({
   onRunTextNode,
   onOptimizePrompt,
   onRunGeneration,
+  onGeneratedResultSave,
+  onGeneratedResultRemove,
   onConnect,
   onDisconnectReference,
   onDisconnectRule,
@@ -176,6 +193,7 @@ export function CanvasStage({
     start: CanvasPoint;
     end: CanvasPoint;
   }>>({});
+  const [imagePreview, setImagePreview] = useState<ImagePreviewState>();
 
   const assetsById = useMemo(
     () => new Map(assets.map((entry) => [entry.asset.id, entry])),
@@ -187,6 +205,45 @@ export function CanvasStage({
   );
   const nodesById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   const connections = useMemo(() => collectConnections(nodes), [nodes]);
+
+  useEffect(() => {
+    setImagePreview((current) => {
+      if (!current) return current;
+      const items = current.items.filter((item) => assetsById.has(item.asset.id));
+      if (!items.length) return undefined;
+      return {
+        ...current,
+        items,
+        index: Math.min(current.index, items.length - 1),
+      };
+    });
+  }, [assetsById]);
+
+  const openImagePreview = useCallback((items: CanvasAssetView[], index: number) => {
+    setImagePreview({ items, index, busy: undefined });
+  }, []);
+
+  const runImagePreviewAction = useCallback(async (action: "save" | "share") => {
+    if (!imagePreview) return;
+    const current = imagePreview.items[imagePreview.index];
+    if (!current) return;
+    setImagePreview((state) => state ? { ...state, busy: action, error: undefined } : state);
+    try {
+      const fileName = current.asset.name || `inspiration-drawer-${current.asset.id}.jpg`;
+      if (action === "save") {
+        await saveImageToGallery(current.displayUri, fileName, current.asset.mimeType);
+      } else {
+        await shareImage(current.displayUri, fileName, current.asset.mimeType);
+      }
+      setImagePreview((state) => state ? { ...state, busy: undefined } : state);
+    } catch (error) {
+      setImagePreview((state) => state ? {
+        ...state,
+        busy: undefined,
+        error: error instanceof Error ? error.message : "操作失败",
+      } : state);
+    }
+  }, [imagePreview]);
 
   const refreshConnectionLayout = useCallback(() => {
     if (connectionLayoutFrameRef.current !== undefined) return;
@@ -746,6 +803,9 @@ export function CanvasStage({
               onChange={(update) => onGenerationChange(node.id, update)}
               onOptimize={() => onOptimizePrompt(node.id)}
               onRun={() => onRunGeneration(node.id)}
+              onPreview={openImagePreview}
+              onSaveResult={onGeneratedResultSave}
+              onRemoveResult={onGeneratedResultRemove}
               onBeginConnection={(event) => beginConnection(event, node)}
               onDisconnectReference={(assetId) => onDisconnectReference(node.id, assetId)}
               onDisconnectRule={(ruleNodeId) => onDisconnectRule(node.id, ruleNodeId)}
@@ -813,6 +873,59 @@ export function CanvasStage({
         <HandTap />
         <span>拖拽端口连线 · 双指缩放 · 长按节点或连线</span>
       </div>
+
+      {imagePreview && imagePreview.items[imagePreview.index] && typeof document !== "undefined" && createPortal(
+        <div
+          className="image-preview-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="图片大图预览"
+          data-canvas-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setImagePreview(undefined);
+          }}
+        >
+          <div className="image-preview-dialog">
+            <header className="image-preview-header">
+              <span>{imagePreview.index + 1} / {imagePreview.items.length}</span>
+              <button type="button" className="dialog-close-action" onClick={() => setImagePreview(undefined)} aria-label="关闭预览"><X /></button>
+            </header>
+            <div className="image-preview-body">
+              {imagePreview.items.length > 1 && (
+                <button
+                  type="button"
+                  className="image-preview-nav is-left"
+                  onClick={() => setImagePreview((state) => state ? { ...state, index: (state.index - 1 + state.items.length) % state.items.length, error: undefined } : state)}
+                  aria-label="上一张"
+                ><ArrowLeft /></button>
+              )}
+              <img
+                src={imagePreview.items[imagePreview.index].displayUri}
+                alt={imagePreview.items[imagePreview.index].asset.name || "生成图片"}
+              />
+              {imagePreview.items.length > 1 && (
+                <button
+                  type="button"
+                  className="image-preview-nav is-right"
+                  onClick={() => setImagePreview((state) => state ? { ...state, index: (state.index + 1) % state.items.length, error: undefined } : state)}
+                  aria-label="下一张"
+                ><ArrowRight /></button>
+              )}
+            </div>
+            <footer className="image-preview-footer">
+              <button type="button" className="secondary-action" onClick={() => void runImagePreviewAction("save")} disabled={Boolean(imagePreview.busy)}>
+                <DownloadSimple />{imagePreview.busy === "save" ? "保存中…" : "保存到相册"}
+              </button>
+              <button type="button" className="primary-action" onClick={() => void runImagePreviewAction("share")} disabled={Boolean(imagePreview.busy)}>
+                <ShareNetwork />{imagePreview.busy === "share" ? "准备分享…" : "分享图片"}
+              </button>
+              {imagePreview.error && <small className="image-preview-error">{imagePreview.error}</small>}
+            </footer>
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }
@@ -1043,6 +1156,9 @@ function GenerationCanvasNode({
   onChange,
   onOptimize,
   onRun,
+  onPreview,
+  onSaveResult,
+  onRemoveResult,
   onBeginConnection,
   onDisconnectReference,
   onDisconnectRule,
@@ -1061,6 +1177,9 @@ function GenerationCanvasNode({
   onChange: (update: GenerationNodeUpdate) => void;
   onOptimize: () => void;
   onRun: () => void;
+  onPreview: (items: CanvasAssetView[], index: number) => void;
+  onSaveResult: (assetId: string) => void;
+  onRemoveResult: (assetId: string) => void;
   onBeginConnection: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onDisconnectReference: (assetId: string) => void;
   onDisconnectRule: (ruleNodeId: string) => void;
@@ -1184,14 +1303,65 @@ function GenerationCanvasNode({
         </div>
 
         <div className={`generation-preview is-${node.status}`}>
-          {resultViews.length ? (
-            <div className={`generation-result-grid count-${Math.min(resultViews.length, 4)}`}>
+          {node.status !== "running" && resultViews.length ? (
+            <div
+              className={`generation-result-grid count-${Math.min(resultViews.length, 4)}`}
+              data-canvas-control="true"
+              onClick={(event) => {
+                const target = event.target as HTMLElement;
+                const image = target.closest("img");
+                if (!image) return;
+                const images = Array.from(event.currentTarget.querySelectorAll("img"));
+                const index = images.indexOf(image);
+                if (index >= 0) onPreview(resultViews, index);
+              }}
+            >
               {resultViews.slice(0, 4).map(({ asset, displayUri }, index) => (
-                <img key={asset.id} src={displayUri} alt={`${node.title} 结果 ${index + 1}`} />
+                <div className="generation-result-item" key={asset.id}>
+                  <img src={displayUri} alt={`${node.title} 结果 ${index + 1}`} />
+                  <div className="generation-result-actions" data-canvas-control="true">
+                    <button
+                      type="button"
+                      aria-label="保存生成结果到相册"
+                      title="保存到相册"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onSaveResult(asset.id);
+                      }}
+                    >
+                      <DownloadSimple />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="删除生成结果"
+                      title="删除生成结果"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onRemoveResult(asset.id);
+                      }}
+                    >
+                      <Trash />
+                    </button>
+                  </div>
+                </div>
               ))}
             </div>
           ) : node.status === "running" ? (
-            <div className="generation-preview-state"><span className="generation-spinner" /><strong>正在生成产品概念图</strong><small>结果会直接保存在素材库</small></div>
+            <>
+              <div
+                className={`generation-result-grid count-${Math.min(Math.max(1, node.request.count), 4)} is-generating`}
+                data-canvas-control="true"
+                aria-label={`姝ｅ湪骞跺彂鐢熸垚 ${node.request.count} 寮犲浘鐗囥€?}`}
+              >
+                {Array.from({ length: Math.min(Math.max(1, node.request.count), 4) }, (_, index) => (
+                  <div className="generation-placeholder" key={`generation-placeholder-${index}`}>
+                    <span className="generation-spinner" />
+                    <small>{index + 1}</small>
+                  </div>
+                ))}
+              </div>
+            <div className="generation-preview-state"><span className="generation-spinner" /><strong>正在生成图片</strong><small>结果会直接保存在素材库</small></div>
+              </>
           ) : node.status === "error" ? (
             <div className="generation-preview-state is-error"><span>!</span><strong>生成失败</strong><small>{node.error}</small></div>
           ) : (
@@ -1201,7 +1371,7 @@ function GenerationCanvasNode({
 
         <label className="node-prompt-field">
           <span className="prompt-field-heading">
-            <span className="field-label">描述产品设计任务</span>
+            <span className="field-label">描述你想生成的图片</span>
             <button type="button" className="prompt-optimize-action" onClick={onOptimize} disabled={isOptimizing || !node.request.prompt.trim()}>
               {isOptimizing ? <span className="button-spinner" /> : <MagicWand />}
               {isOptimizing ? "优化中" : "优化提示词"}
@@ -1209,7 +1379,7 @@ function GenerationCanvasNode({
           </span>
           <textarea
             value={node.request.prompt}
-            placeholder="例如：便携式桌面投影仪，圆润一体化机身，磨砂铝与暖灰织物 CMF，工作室产品摄影……"
+            placeholder="例如：雨夜街头的霓虹倒影、自然光下的人物肖像、极简产品摄影、奇幻森林插画……"
             onChange={(event) => onChange({ prompt: event.currentTarget.value })}
           />
         </label>
@@ -1248,7 +1418,7 @@ function GenerationCanvasNode({
           <label>
             <span>张数</span>
             <select value={node.request.count} onChange={(event) => onChange({ count: Number(event.currentTarget.value) })}>
-              <option value={1}>1</option><option value={2}>2</option><option value={4}>4</option>
+              <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option><option value={4}>4</option>
             </select>
           </label>
           <button className="node-run-action" type="button" onClick={onRun} disabled={node.status === "running" || !node.request.prompt.trim()}>

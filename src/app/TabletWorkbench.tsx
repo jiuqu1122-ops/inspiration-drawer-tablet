@@ -51,11 +51,12 @@ import {
   type TabletUpdateInfo,
   type TabletUpdateProgress,
 } from "../services/tabletUpdateService";
+import { saveImageToGallery } from "../services/tabletMediaService";
 import { tabletStorage } from "../storage/indexedDbStorageService";
 import { createId } from "../utils/id";
 
 const DEFAULT_PROJECT_ID = "tablet-local-project";
-const DEFAULT_PROJECT_NAME = "未命名工业设计项目";
+const DEFAULT_PROJECT_NAME = "未命名创作项目";
 const DEFAULT_VIEWPORT: CanvasViewport = { x: 0, y: 0, scale: 1 };
 const MANAGED_IMAGE_MODEL = {
   provider: "server-gateway" as const,
@@ -63,7 +64,7 @@ const MANAGED_IMAGE_MODEL = {
 };
 const THEME_STORAGE_KEY = "inspiration-drawer-tablet-theme";
 const UPDATE_CHECK_STORAGE_KEY = "inspiration-drawer-tablet-update-checked-at";
-const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
+const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 type ThemeMode = "system" | "light" | "dark";
 
@@ -90,7 +91,7 @@ export function TabletWorkbench() {
   const [nodePresets, setNodePresets] = useState<CanvasNodePresetDefinition[]>([]);
   const [hiddenWorkflowPresetIds, setHiddenWorkflowPresetIds] = useState<string[]>([]);
   const [serverSession, setServerSession] = useState<ServerSession>({ authenticated: false });
-  const [appVersion, setAppVersion] = useState("0.1.0");
+  const [appVersion, setAppVersion] = useState("0.1.1");
   const [availableUpdate, setAvailableUpdate] = useState<TabletUpdateInfo>();
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
@@ -106,6 +107,10 @@ export function TabletWorkbench() {
   const nodesRef = useRef<CanvasNode[]>([]);
   const projectsRef = useRef<CanvasProject[]>([]);
   const runningNodeIdsRef = useRef<Set<string>>(new Set());
+  // A generation can outlive the WebView while Android is locked/backgrounded.
+  // Keep a separate set so focus/visibility events cannot start duplicate
+  // recovery calls for the same canvas node.
+  const recoveringNodeIdsRef = useRef<Set<string>>(new Set());
 
   const updateNodesState = useCallback((updater: (current: CanvasNode[]) => CanvasNode[]) => {
     setNodes((current) => {
@@ -181,16 +186,34 @@ export function TabletWorkbench() {
   }, [isCheckingUpdate]);
 
   useEffect(() => {
+    let interval: number | undefined;
+    const runDailyCheck = () => {
+      window.localStorage.setItem(UPDATE_CHECK_STORAGE_KEY, String(Date.now()));
+      void checkForTabletUpdate(true);
+    };
     const lastCheckedAt = Number(window.localStorage.getItem(UPDATE_CHECK_STORAGE_KEY) ?? 0);
     const elapsed = Number.isFinite(lastCheckedAt) ? Date.now() - lastCheckedAt : UPDATE_CHECK_INTERVAL_MS;
     const delay = lastCheckedAt > 0
       ? Math.max(1_000, UPDATE_CHECK_INTERVAL_MS - elapsed)
       : 15_000;
     const timer = window.setTimeout(() => {
-      window.localStorage.setItem(UPDATE_CHECK_STORAGE_KEY, String(Date.now()));
-      void checkForTabletUpdate(true);
+      runDailyCheck();
+      interval = window.setInterval(runDailyCheck, UPDATE_CHECK_INTERVAL_MS);
     }, delay);
-    return () => window.clearTimeout(timer);
+    const checkOnResume = () => {
+      const checkedAt = Number(window.localStorage.getItem(UPDATE_CHECK_STORAGE_KEY) ?? 0);
+      if (!Number.isFinite(checkedAt) || Date.now() - checkedAt >= UPDATE_CHECK_INTERVAL_MS) {
+        runDailyCheck();
+      }
+    };
+    window.addEventListener("focus", checkOnResume);
+    document.addEventListener("visibilitychange", checkOnResume);
+    return () => {
+      window.clearTimeout(timer);
+      if (interval !== undefined) window.clearInterval(interval);
+      window.removeEventListener("focus", checkOnResume);
+      document.removeEventListener("visibilitychange", checkOnResume);
+    };
   }, [checkForTabletUpdate]);
 
   const beginTabletUpdate = async () => {
@@ -422,6 +445,46 @@ export function TabletWorkbench() {
     }
   };
 
+  const saveAssetToGallery = async (assetId: string) => {
+    const entry = assetsRef.current.find((candidate) => candidate.asset.id === assetId);
+    if (!entry) return;
+    try {
+      await saveImageToGallery(
+        entry.displayUri,
+        entry.asset.name || `inspiration-drawer-${entry.asset.id}.jpg`,
+        entry.asset.mimeType,
+      );
+      setNotice({ tone: "success", message: "图片已保存到相册" });
+    } catch (error) {
+      setNotice({ tone: "error", message: getErrorMessage(error, "保存图片失败") });
+    }
+  };
+
+  const removeGeneratedAsset = async (assetId: string) => {
+    const entry = assetsRef.current.find((candidate) => candidate.asset.id === assetId);
+    if (!entry || entry.asset.source !== "generated") return;
+    if (!window.confirm(`确定删除生成结果“${entry.asset.name}”吗？删除后将从所有项目和节点中移除。`)) return;
+    try {
+      const currentNodes = removeAssetReferences(nodesRef.current, assetId);
+      const nextProjects = projectsRef.current.map((project) => ({
+        ...project,
+        nodes: project.id === activeProjectId
+          ? currentNodes
+          : removeAssetReferences(project.nodes, assetId),
+        updatedAt: Date.now(),
+      }));
+      await tabletStorage.removeImageAsset(assetId);
+      await Promise.all(nextProjects.map((project) => tabletStorage.saveProject(project)));
+      updateAssetsState((current) => current.filter((candidate) => candidate.asset.id !== assetId));
+      updateNodesState(() => currentNodes);
+      setProjects(nextProjects);
+      setSelectedNodeId((current) => current && currentNodes.some((node) => node.id === current) ? current : undefined);
+      setNotice({ tone: "success", message: "生成结果已删除" });
+    } catch (error) {
+      setNotice({ tone: "error", message: getErrorMessage(error, "删除生成结果失败") });
+    }
+  };
+
   const saveActiveProject = async () => {
     const existing = projectsRef.current.find((project) => project.id === activeProjectId);
     const now = Date.now();
@@ -444,7 +507,7 @@ export function TabletWorkbench() {
       const nextNumber = projectsRef.current.length + 1;
       const project = createBlankProject(
         createId("tablet-project"),
-        nextNumber === 1 ? DEFAULT_PROJECT_NAME : `未命名工业设计项目 ${nextNumber}`,
+        nextNumber === 1 ? DEFAULT_PROJECT_NAME : `未命名创作项目 ${nextNumber}`,
       );
       await tabletStorage.saveProject(project);
       setProjects((current) => [...current, project]);
@@ -517,7 +580,7 @@ export function TabletWorkbench() {
     setNodes((current) => [...current, generationNode]);
     setSelectedNodeId(generationNode.id);
     setIsResourceDrawerOpen(false);
-    setNotice({ tone: "neutral", message: "已创建生图节点，在节点内描述设计任务即可运行" });
+    setNotice({ tone: "neutral", message: "已创建生图节点，在节点内描述想生成的图片即可运行" });
   };
 
   const addRuleNode = () => {
@@ -715,7 +778,7 @@ export function TabletWorkbench() {
       return false;
     }
     setOptimizingNodeIds((current) => new Set(current).add(nodeId));
-    setNotice({ tone: "neutral", message: "正在按工业设计任务优化提示词" });
+    setNotice({ tone: "neutral", message: "正在按图片生成需求优化提示词" });
     try {
       const optimizedPrompt = await new TauriImageGenerationService().optimizePrompt(originalPrompt);
       if (!optimizedPrompt.trim()) {
@@ -800,15 +863,82 @@ export function TabletWorkbench() {
     }
   };
 
+  const saveGenerationResults = useCallback(async (
+    results: GeneratedImageResult[],
+    request: ImageGenerationRequest,
+    nodeId: string,
+  ): Promise<GeneratedImageResult[]> => {
+    const savedEntries = await Promise.all(results.map(async (result, index) => {
+      const asset = await tabletStorage.saveGeneratedImage(
+        createGeneratedAsset(result, request, index),
+      );
+      return {
+        asset,
+        displayUri: await tabletStorage.resolveDisplayUri(asset),
+      } satisfies CanvasAssetView;
+    }));
+    const storedResults: GeneratedImageResult[] = savedEntries.map(({ asset }) => ({
+      id: asset.id,
+      requestId: request.id,
+      uri: asset.uri,
+      mimeType: asset.mimeType,
+      width: asset.dimensions?.width,
+      height: asset.dimensions?.height,
+      createdAt: asset.createdAt,
+    }));
+
+    updateAssetsState((current) => [...savedEntries.slice().reverse(), ...current]);
+    updateNodesState((current) => current.map((node) =>
+      node.id === nodeId && node.type === "generation"
+        ? { ...node, status: "success", results: storedResults, error: undefined }
+        : node,
+    ));
+    return storedResults;
+  }, [updateAssetsState, updateNodesState]);
+
   const runGenerationNode = async (nodeId: string, quiet = false): Promise<boolean> => {
     const sourceNode = nodesRef.current.find((node): node is CanvasGenerationNode => node.id === nodeId && node.type === "generation");
     if (!sourceNode) {
       return false;
     }
     if (runningNodeIdsRef.current.has(nodeId)) return false;
+    if (sourceNode.results.length > 0) {
+      if (!sourceNode.request.prompt.trim()) {
+        setNotice({ tone: "error", message: "璇峰厛鍦ㄧ敓鍥捐妭鐐逛腑鎻忚堪浜у搧璁捐浠诲姟" });
+        return false;
+      }
+      if (!serverSession.authenticated) {
+        setIsAccountDialogOpen(true);
+        setNotice({ tone: "neutral", message: "璇峰厛鐧诲綍宸茬粦瀹氶搴︾殑閭锛屽啀杩愯鐢熷浘鑺傜偣" });
+        return false;
+      }
+      // Match desktop behavior: a rerun never overwrites a completed node.
+      // Clone its inputs/settings into a fresh node and run that node instead.
+      const now = Date.now();
+      const nextRequest: ImageGenerationRequest = {
+        ...sourceNode.request,
+        id: createId("generation-request"),
+        createdAt: now,
+      };
+      const nextNode: CanvasGenerationNode = {
+        ...createGenerationNode(nextRequest, nodesRef.current.length, {
+          x: sourceNode.x + sourceNode.width + 64,
+          y: sourceNode.y,
+        }),
+        title: sourceNode.title,
+        workflowInstanceId: sourceNode.workflowInstanceId,
+        workflowTemplateId: sourceNode.workflowTemplateId,
+        workflowOrder: sourceNode.workflowOrder,
+      };
+      const nextNodes = [...nodesRef.current, nextNode];
+      nodesRef.current = nextNodes;
+      setNodes(nextNodes);
+      setSelectedNodeId(nextNode.id);
+      return runGenerationNode(nextNode.id, quiet);
+    }
     const cleanPrompt = sourceNode.request.prompt.trim();
     if (!cleanPrompt) {
-      setNotice({ tone: "error", message: "请先在生图节点中描述产品设计任务" });
+      setNotice({ tone: "error", message: "请先在生图节点中描述想生成的图片" });
       return false;
     }
     if (!serverSession.authenticated) {
@@ -855,32 +985,33 @@ export function TabletWorkbench() {
       const rules = mergeImageRuleStates(...(request.ruleNodeIds ?? [])
         .map((ruleNodeId) => nodesRef.current.find((node): node is CanvasRuleNode => node.id === ruleNodeId && node.type === "rule")?.rules));
       const service = new TauriImageGenerationService();
-      const results = await service.generate(executionRequest, { inputAssets, rules });
-      const savedEntries = await Promise.all(results.map(async (result, index) => {
-        const asset = await tabletStorage.saveGeneratedImage(
-          createGeneratedAsset(result, request, index),
-        );
-        return {
-          asset,
-          displayUri: await tabletStorage.resolveDisplayUri(asset),
-        } satisfies CanvasAssetView;
-      }));
-      const storedResults: GeneratedImageResult[] = savedEntries.map(({ asset }) => ({
-        id: asset.id,
-        requestId: request.id,
-        uri: asset.uri,
-        mimeType: asset.mimeType,
-        width: asset.dimensions?.width,
-        height: asset.dimensions?.height,
-        createdAt: asset.createdAt,
-      }));
-
-      updateAssetsState((current) => [...savedEntries.slice().reverse(), ...current]);
-      updateNodesState((current) => current.map((node) =>
-        node.id === nodeId && node.type === "generation"
-          ? { ...node, status: "success", results: storedResults, error: undefined }
-          : node,
-      ));
+      let results: GeneratedImageResult[];
+      try {
+        results = await service.generate(executionRequest, { inputAssets, rules });
+      } catch (generationError) {
+        // Android may suspend the WebView while the native request continues.
+        // The server keeps the idempotent task, so recover it before reporting
+        // a misleading network failure to the user.
+        try {
+          results = await service.recover(request.id, request.count);
+          if (!quiet) setNotice({ tone: "success", message: "应用恢复后已找回生成结果" });
+        } catch (recoveryError) {
+          // A still-running server task is not a generation failure. Keep the
+          // node recoverable; the foreground/visibility recovery loop below
+          // will poll it again after Android returns the app to the screen.
+          if (isImageRecoveryPendingError(recoveryError)) {
+            updateNodesState((current) => current.map((node) =>
+              node.id === nodeId && node.type === "generation"
+                ? { ...node, status: "running", error: undefined }
+                : node,
+            ));
+            if (!quiet) setNotice({ tone: "neutral", message: "图片仍在后台生成，返回应用后会自动恢复结果" });
+            return false;
+          }
+          throw generationError;
+        }
+      }
+      const storedResults = await saveGenerationResults(results, request, nodeId);
       if (!quiet) setNotice({ tone: "success", message: `已生成 ${storedResults.length} 张图片并保存到素材库` });
       void getServerSession().then(setServerSession).catch(() => undefined);
       return true;
@@ -897,6 +1028,67 @@ export function TabletWorkbench() {
       runningNodeIdsRef.current.delete(nodeId);
     }
   };
+
+  const recoverRunningGenerationNodes = useCallback(async () => {
+    if (!hydratedRef.current || !serverSession.authenticated || document.visibilityState !== "visible") {
+      return;
+    }
+    const candidates = nodesRef.current.filter((node): node is CanvasGenerationNode =>
+      node.type === "generation"
+      && node.status === "running"
+      && !runningNodeIdsRef.current.has(node.id)
+      && !recoveringNodeIdsRef.current.has(node.id),
+    );
+    if (!candidates.length) return;
+
+    const service = new TauriImageGenerationService();
+    await Promise.all(candidates.map(async (node) => {
+      recoveringNodeIdsRef.current.add(node.id);
+      try {
+        const results = await service.recover(node.request.id, node.request.count, { maxWaitSeconds: 30 });
+        const storedResults = await saveGenerationResults(results, node.request, node.id);
+        setNotice({ tone: "success", message: `已恢复后台生成的 ${storedResults.length} 张图片` });
+        void getServerSession().then(setServerSession).catch(() => undefined);
+      } catch (error) {
+        const message = getErrorMessage(error, "后台生成仍在处理中");
+        if (isImageRecoveryPendingError(error) || isTransientRecoveryError(message)) {
+          // Leave the node as running. A later focus/visibility/timer pass will
+          // retry the same persisted request ID instead of creating a duplicate.
+          updateNodesState((current) => current.map((candidate) =>
+            candidate.id === node.id && candidate.type === "generation"
+              ? { ...candidate, status: "running", error: undefined }
+              : candidate,
+          ));
+          return;
+        }
+        updateNodesState((current) => current.map((candidate) =>
+          candidate.id === node.id && candidate.type === "generation"
+            ? { ...candidate, status: "error", error: message }
+            : candidate,
+        ));
+        setNotice({ tone: "error", message });
+      } finally {
+        recoveringNodeIdsRef.current.delete(node.id);
+      }
+    }));
+  }, [saveGenerationResults, serverSession.authenticated, updateNodesState]);
+
+  useEffect(() => {
+    const recoverWhenVisible = () => {
+      if (document.visibilityState === "visible") void recoverRunningGenerationNodes();
+    };
+    document.addEventListener("visibilitychange", recoverWhenVisible);
+    window.addEventListener("focus", recoverWhenVisible);
+    window.addEventListener("pageshow", recoverWhenVisible);
+    const timer = window.setInterval(recoverWhenVisible, 15_000);
+    recoverWhenVisible();
+    return () => {
+      document.removeEventListener("visibilitychange", recoverWhenVisible);
+      window.removeEventListener("focus", recoverWhenVisible);
+      window.removeEventListener("pageshow", recoverWhenVisible);
+      window.clearInterval(timer);
+    };
+  }, [recoverRunningGenerationNodes]);
 
   const connectNodes = (sourceNodeId: string, targetNodeId: string) => {
     const source = nodesRef.current.find((node) => node.id === sourceNodeId);
@@ -1126,6 +1318,8 @@ export function TabletWorkbench() {
           onRunTextNode={(nodeId) => void runTextNode(nodeId)}
           onOptimizePrompt={(nodeId) => void optimizeGenerationPrompt(nodeId)}
           onRunGeneration={(nodeId) => void runGenerationNode(nodeId)}
+          onGeneratedResultSave={(assetId) => void saveAssetToGallery(assetId)}
+          onGeneratedResultRemove={(assetId) => void removeGeneratedAsset(assetId)}
           onConnect={connectNodes}
           onDisconnectReference={disconnectReference}
           onDisconnectRule={disconnectRule}
@@ -1140,7 +1334,15 @@ export function TabletWorkbench() {
         projects={projects}
         activeProjectId={activeProjectId}
         onAssetSelect={addAssetToCanvas}
-        onAssetRemove={(assetId) => void removeDeviceAsset(assetId)}
+        onAssetSave={(assetId) => void saveAssetToGallery(assetId)}
+        onAssetRemove={(assetId) => {
+          const entry = assetsRef.current.find((candidate) => candidate.asset.id === assetId);
+          if (entry?.asset.source === "generated") {
+            void removeGeneratedAsset(assetId);
+          } else {
+            void removeDeviceAsset(assetId);
+          }
+        }}
         onProjectCreate={() => void createProject()}
         onProjectSelect={(projectId) => void selectProject(projectId)}
         onProjectRename={(projectId, name) => void renameProject(projectId, name)}
@@ -1230,7 +1432,7 @@ function createTextNode(title: string, index: number, point: CanvasPoint): Canva
     type: "text",
     title,
     prompt: "",
-    systemPrompt: "你是 Inspiration Drawer 的工业设计文字 LLM 节点。只输出可直接交付给下游节点的内容。",
+    systemPrompt: "你是 Inspiration Drawer 的图片创作文字 LLM 节点。只输出可直接交付给下游节点的内容。",
     inputNodeIds: [],
     output: "",
     status: "idle",
@@ -1369,7 +1571,7 @@ function createGenerationNode(
   return {
     id: createId("canvas-generation"),
     type: "generation",
-    title: "AI 产品概念图",
+    title: "AI 图片生成",
     request,
     status: "idle",
     results: [],
@@ -1429,7 +1631,9 @@ function normalizeStoredNode(node: CanvasNode): CanvasNode {
     ...node,
     width: 372,
     height: 574,
-    status: node.status === "running" ? "idle" : node.status,
+    // Keep persisted running nodes recoverable after Android suspends or
+    // recreates the WebView while the server task is still running.
+    status: node.status,
     request: {
       ...node.request,
       model: { provider: "server-gateway", model: preset.id },
@@ -1457,7 +1661,7 @@ function createGeneratedAsset(
   return {
     id: result.id,
     kind: "image",
-    name: `AI 产品概念图 ${index + 1}.png`,
+    name: `AI generated image ${index + 1}.${result.mimeType === "image/png" ? "png" : result.mimeType === "image/webp" ? "webp" : "jpg"}`,
     mimeType: result.mimeType,
     storageKind: "memory",
     uri: result.uri,
@@ -1500,4 +1704,21 @@ function fitCanvasSize(asset: ImageAsset) {
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : typeof error === "string" ? error : fallback;
+}
+
+function isImageRecoveryPendingError(error: unknown): boolean {
+  return getErrorMessage(error, "").toUpperCase().includes("IMAGE_RECOVERY_PENDING");
+}
+
+function isTransientRecoveryError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return [
+    "network",
+    "fetch",
+    "request",
+    "connection",
+    "timed out",
+    "timeout",
+    "url",
+  ].some((token) => normalized.includes(token));
 }
