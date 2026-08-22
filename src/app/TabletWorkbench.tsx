@@ -91,7 +91,7 @@ export function TabletWorkbench() {
   const [nodePresets, setNodePresets] = useState<CanvasNodePresetDefinition[]>([]);
   const [hiddenWorkflowPresetIds, setHiddenWorkflowPresetIds] = useState<string[]>([]);
   const [serverSession, setServerSession] = useState<ServerSession>({ authenticated: false });
-  const [appVersion, setAppVersion] = useState("0.1.1");
+  const [appVersion, setAppVersion] = useState("0.1.2");
   const [availableUpdate, setAvailableUpdate] = useState<TabletUpdateInfo>();
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
@@ -170,6 +170,8 @@ export function TabletWorkbench() {
       const result = await checkTabletUpdate();
       setAvailableUpdate(result.available ? result : undefined);
       if (result.available) {
+        // Keep the update dialog above every other modal, including AccountDialog.
+        setIsAccountDialogOpen(false);
         setUpdateMessage(undefined);
         setUpdateProgress(0);
         setIsUpdateDialogOpen(true);

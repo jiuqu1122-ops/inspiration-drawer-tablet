@@ -17,6 +17,7 @@ class TabletGenerationKeepAliveService : Service() {
 
   override fun onCreate() {
     super.onCreate()
+    try {
     createNotificationChannel()
     val notificationIntent = Intent(this, MainActivity::class.java)
     val pendingIntent = PendingIntent.getActivity(
@@ -48,6 +49,15 @@ class TabletGenerationKeepAliveService : Service() {
     ).apply {
       setReferenceCounted(false)
       acquire(15 * 60 * 1000L)
+    }
+    } catch (_: SecurityException) {
+      // Some device policies reject wake locks or foreground-service startup.
+      // Generation itself is server-side, so this optional optimization must
+      // never crash the host activity.
+      stopSelf()
+    } catch (_: RuntimeException) {
+      // Keep the optional optimization best-effort on vendor Android builds.
+      stopSelf()
     }
   }
 
