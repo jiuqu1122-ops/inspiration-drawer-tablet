@@ -338,6 +338,15 @@ select:focus-visible {
   inset: 0;
   transform-origin: 0 0;
   will-change: transform;
+  z-index: 1;
+}
+
+.node-connections-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  pointer-events: none;
 }
 
 .node-connections {
@@ -348,6 +357,7 @@ select:focus-visible {
   height: 1px;
   overflow: visible;
   pointer-events: none;
+  display: none;
 }
 
 .node-connection-halo,

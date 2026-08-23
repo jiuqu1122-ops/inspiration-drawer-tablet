@@ -177,6 +177,7 @@ export function CanvasStage({
   const stageRef = useRef<HTMLDivElement>(null);
   const viewportLayerRef = useRef<HTMLDivElement>(null);
   const connectionLayerRef = useRef<SVGSVGElement>(null);
+  const connectionCanvasRef = useRef<HTMLCanvasElement>(null);
   const nodeElementsRef = useRef(new Map<string, HTMLDivElement>());
   const activePointersRef = useRef(new Map<number, CanvasPoint>());
   const gestureRef = useRef<Gesture | undefined>(undefined);
@@ -373,6 +374,37 @@ export function CanvasStage({
     const end = measured?.end ?? worldToStage(getInputPoint(connection.target));
     return { ...connection, start, end, path: createConnectionPath(start, end) };
   }), [connections, connectionPortPoints]);
+
+  // Draw the visible connections in a stage-level canvas. Keeping this layer
+  // outside the transformed node viewport avoids a WebView/SVG compositing
+  // bug present on some Android devices where saved paths are offset from the
+  // measured ports. Both the ports and canvas use the same CSS pixel space.
+  useLayoutEffect(() => {
+    const canvas = connectionCanvasRef.current;
+    const stage = stageRef.current;
+    if (!canvas || !stage) return;
+
+    const bounds = stage.getBoundingClientRect();
+    const width = Math.max(1, Math.round(bounds.width));
+    const height = Math.max(1, Math.round(bounds.height));
+    const devicePixelRatio = Math.min(Math.max(window.devicePixelRatio || 1, 1), 3);
+    canvas.width = Math.max(1, Math.round(width * devicePixelRatio));
+    canvas.height = Math.max(1, Math.round(height * devicePixelRatio));
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    context.clearRect(0, 0, width, height);
+
+    renderedConnections.forEach(({ start, end, kind }) => {
+      drawCanvasConnection(context, start, end, kind);
+    });
+    if (connectionDraft) {
+      drawCanvasDraft(context, connectionDraft.start, connectionDraft.current);
+    }
+  }, [connectionDraft, connectionLayoutRevision, renderedConnections]);
 
   const beginPinch = useCallback(() => {
     const points = [...activePointersRef.current.values()];
@@ -708,6 +740,11 @@ export function CanvasStage({
       onContextMenu={(event) => event.preventDefault()}
     >
       <div className="canvas-grid" aria-hidden="true" />
+      <canvas
+        ref={connectionCanvasRef}
+        className="node-connections-canvas"
+        aria-hidden="true"
+      />
       <div ref={viewportLayerRef} className="canvas-viewport">
         <svg ref={connectionLayerRef} className="node-connections" aria-label="节点连线层">
           <defs>
@@ -1598,6 +1635,92 @@ function distanceToSegment(point: CanvasPoint, start: CanvasPoint, end: CanvasPo
 function createConnectionPath(start: CanvasPoint, end: CanvasPoint): string {
   const distance = Math.max(Math.abs(end.x - start.x) * 0.46, 70);
   return `M ${start.x} ${start.y} C ${start.x + distance} ${start.y}, ${end.x - distance} ${end.y}, ${end.x} ${end.y}`;
+}
+
+function traceCanvasConnection(
+  context: CanvasRenderingContext2D,
+  start: CanvasPoint,
+  end: CanvasPoint,
+) {
+  const distance = Math.max(Math.abs(end.x - start.x) * 0.46, 70);
+  context.beginPath();
+  context.moveTo(start.x, start.y);
+  context.bezierCurveTo(
+    start.x + distance,
+    start.y,
+    end.x - distance,
+    end.y,
+    end.x,
+    end.y,
+  );
+}
+
+function drawCanvasConnection(
+  context: CanvasRenderingContext2D,
+  start: CanvasPoint,
+  end: CanvasPoint,
+  kind: "image" | "rule" | "text" | "generation",
+) {
+  const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
+  if (kind === "rule") {
+    gradient.addColorStop(0, "#e7a930");
+    gradient.addColorStop(1, "#55a984");
+  } else {
+    gradient.addColorStop(0, "#10bce5");
+    gradient.addColorStop(1, "#e2b841");
+  }
+
+  context.save();
+  traceCanvasConnection(context, start, end);
+  context.strokeStyle = "rgba(255, 255, 255, 0.96)";
+  context.lineWidth = 6;
+  context.lineCap = "round";
+  context.stroke();
+  traceCanvasConnection(context, start, end);
+  context.strokeStyle = gradient;
+  context.lineWidth = 2.5;
+  context.stroke();
+  context.restore();
+
+  drawCanvasPoint(context, start, kind === "rule" ? "#dda22d" : "#12bfe8");
+  drawCanvasPoint(context, end, "#3c8ff0");
+}
+
+function drawCanvasDraft(
+  context: CanvasRenderingContext2D,
+  start: CanvasPoint,
+  end: CanvasPoint,
+) {
+  context.save();
+  traceCanvasConnection(context, start, end);
+  context.strokeStyle = "rgba(255, 255, 255, 0.96)";
+  context.lineWidth = 6;
+  context.lineCap = "round";
+  context.stroke();
+  traceCanvasConnection(context, start, end);
+  context.strokeStyle = "#169fdd";
+  context.lineWidth = 3;
+  context.setLineDash([9, 7]);
+  context.stroke();
+  context.restore();
+  drawCanvasPoint(context, end, "#169fdd", 6);
+}
+
+function drawCanvasPoint(
+  context: CanvasRenderingContext2D,
+  point: CanvasPoint,
+  color: string,
+  radius = 5,
+) {
+  context.save();
+  context.beginPath();
+  context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+  context.fillStyle = "#ffffff";
+  context.fill();
+  context.lineWidth = 2;
+  context.strokeStyle = color;
+  context.stroke();
+  context.restore();
 }
 
 function registerNodeElement(nodeId: string, element: HTMLDivElement | null, elements: Map<string, HTMLDivElement>) {
