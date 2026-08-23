@@ -176,6 +176,7 @@ export function CanvasStage({
 }: CanvasStageProps) {
   const stageRef = useRef<HTMLDivElement>(null);
   const viewportLayerRef = useRef<HTMLDivElement>(null);
+  const connectionLayerRef = useRef<SVGSVGElement>(null);
   const nodeElementsRef = useRef(new Map<string, HTMLDivElement>());
   const activePointersRef = useRef(new Map<number, CanvasPoint>());
   const gestureRef = useRef<Gesture | undefined>(undefined);
@@ -259,6 +260,12 @@ export function CanvasStage({
       viewportLayerRef.current.style.transform =
         `translate3d(${next.x}px, ${next.y}px, 0) scale(${next.scale})`;
     }
+    if (connectionLayerRef.current) {
+      const inverseScale = 1 / Math.max(next.scale, MIN_SCALE);
+      connectionLayerRef.current.style.transformOrigin = "0 0";
+      connectionLayerRef.current.style.transform =
+        `matrix(${inverseScale}, 0, 0, ${inverseScale}, ${-next.x * inverseScale}, ${-next.y * inverseScale})`;
+    }
     // The CSS transform is applied imperatively during a gesture and in an
     // effect after React renders. Re-measure ports after it is on the layer so
     // SVG connection points cannot retain a previous device/viewport matrix.
@@ -313,15 +320,15 @@ export function CanvasStage({
     getStagePointFromClient(event.clientX, event.clientY)
   );
 
-  const stageToWorld = (point: CanvasPoint): CanvasPoint => {
+  const worldToStage = (point: CanvasPoint): CanvasPoint => {
     const current = liveViewportRef.current;
     return {
-      x: (point.x - current.x) / current.scale,
-      y: (point.y - current.y) / current.scale,
+      x: point.x * current.scale + current.x,
+      y: point.y * current.scale + current.y,
     };
   };
 
-  const getPortWorldPoint = useCallback((
+  const getPortStagePoint = useCallback((
     node: CanvasNode,
     selector: ".output-port" | ".input-port",
     fallback: CanvasPoint,
@@ -329,21 +336,15 @@ export function CanvasStage({
     const nodeElement = nodeElementsRef.current.get(node.id);
     const portElement = nodeElement?.querySelector<HTMLElement>(selector);
     if (!nodeElement || !portElement) return fallback;
-    const nodeBounds = nodeElement.getBoundingClientRect();
+    const stageBounds = stageRef.current?.getBoundingClientRect();
     const portBounds = portElement.getBoundingClientRect();
-    if (nodeBounds.width <= 0 || nodeBounds.height <= 0 || portBounds.width <= 0) return fallback;
-
-    // Use the port's position relative to its own node, rather than inverting
-    // the page/viewport transform. Both rectangles carry exactly the same
-    // Android WebView scale, display zoom, and CSS transform, so the ratio is
-    // stable even on devices where the reported transform matrix is stale.
-    const currentGesture = gestureRef.current;
-    const nodePosition = currentGesture?.mode === "drag" && currentGesture.nodeId === node.id
-      ? currentGesture.currentNode
-      : { x: node.x, y: node.y };
+    if (!stageBounds || portBounds.width <= 0 || portBounds.height <= 0) return fallback;
+    // Store points in stage/screen coordinates. The SVG is rendered outside
+    // the transformed node layer, so these are the exact same coordinates the
+    // user sees on the device regardless of WebView scale or DPR.
     return {
-      x: nodePosition.x + ((portBounds.left + portBounds.width / 2 - nodeBounds.left) / nodeBounds.width) * node.width,
-      y: nodePosition.y + ((portBounds.top + portBounds.height / 2 - nodeBounds.top) / nodeBounds.height) * node.height,
+      x: portBounds.left + portBounds.width / 2 - stageBounds.left,
+      y: portBounds.top + portBounds.height / 2 - stageBounds.top,
     };
   }, []);
 
@@ -351,25 +352,25 @@ export function CanvasStage({
     const nextPoints = Object.fromEntries(connections.map((connection) => [
       connection.key,
       {
-        start: getPortWorldPoint(
+        start: getPortStagePoint(
           connection.source,
           ".output-port",
-          getOutputPoint(connection.source),
+          worldToStage(getOutputPoint(connection.source)),
         ),
-        end: getPortWorldPoint(
+        end: getPortStagePoint(
           connection.target,
           ".input-port",
-          getInputPoint(connection.target),
+          worldToStage(getInputPoint(connection.target)),
         ),
       },
     ]));
     setConnectionPortPoints(nextPoints);
-  }, [connections, connectionLayoutRevision, getPortWorldPoint, viewport.scale]);
+  }, [connections, connectionLayoutRevision, getPortStagePoint, viewport.scale]);
 
   const renderedConnections = useMemo(() => connections.map((connection) => {
     const measured = connectionPortPoints[connection.key];
-    const start = measured?.start ?? getOutputPoint(connection.source);
-    const end = measured?.end ?? getInputPoint(connection.target);
+    const start = measured?.start ?? worldToStage(getOutputPoint(connection.source));
+    const end = measured?.end ?? worldToStage(getInputPoint(connection.target));
     return { ...connection, start, end, path: createConnectionPath(start, end) };
   }), [connections, connectionPortPoints]);
 
@@ -444,7 +445,10 @@ export function CanvasStage({
       return;
     }
     const stagePoint = getStagePointFromClient(event.clientX, event.clientY);
-    const startWorld = getPortWorldPoint(sourceNode, ".output-port", getOutputPoint(sourceNode));
+    // For the live drag preview, use the exact point where the finger pressed
+    // the port. This keeps the preview visually attached even if a device
+    // reports a stale transformed DOMRect for the enlarged hit target.
+    const startStagePoint = stagePoint;
     stage.setPointerCapture(event.pointerId);
     activePointersRef.current.set(event.pointerId, stagePoint);
     gestureRef.current = {
@@ -452,12 +456,12 @@ export function CanvasStage({
       pointerId: event.pointerId,
       sourceNodeId: sourceNode.id,
       startPoint: stagePoint,
-      startWorld,
-      currentWorld: startWorld,
+      startWorld: startStagePoint,
+      currentWorld: startStagePoint,
       moved: false,
     };
     setConnectionSourceId(sourceNode.id);
-    setConnectionDraft({ sourceNodeId: sourceNode.id, start: startWorld, current: startWorld });
+    setConnectionDraft({ sourceNodeId: sourceNode.id, start: startStagePoint, current: startStagePoint });
     onSelectNode(sourceNode.id);
   };
 
@@ -528,11 +532,7 @@ export function CanvasStage({
       return;
     }
 
-    const nearbyConnection = findNearbyConnection(
-      stageToWorld(point),
-      renderedConnections,
-      20 / Math.max(liveViewportRef.current.scale, MIN_SCALE),
-    );
+    const nearbyConnection = findNearbyConnection(point, renderedConnections, 20);
     if (nearbyConnection) {
       clearConnectionPress();
       gestureRef.current = {
@@ -574,21 +574,16 @@ export function CanvasStage({
 
     if (gesture?.mode === "connect" && gesture.pointerId === event.pointerId) {
       const targetNodeId = findConnectionTargetAtPoint(event.clientX, event.clientY);
-      const targetNode = targetNodeId
-        ? nodes.find((node): node is CanvasGenerationNode | CanvasTextNode => (
-          node.id === targetNodeId && (node.type === "generation" || node.type === "text")
-        ))
-        : undefined;
-      const currentWorld = targetNode
-        ? getPortWorldPoint(targetNode, ".input-port", getInputPoint(targetNode))
-        : stageToWorld(point);
-      gesture.currentWorld = currentWorld;
+      // Keep the draft endpoint under the finger. The target highlight and
+      // the final persisted connection still use the node's input port.
+      const currentStagePoint = point;
+      gesture.currentWorld = currentStagePoint;
       gesture.targetNodeId = targetNodeId;
       gesture.moved = gesture.moved || getDistance(gesture.startPoint, point) >= CONNECTION_DRAG_THRESHOLD;
       setConnectionDraft({
         sourceNodeId: gesture.sourceNodeId,
         start: gesture.startWorld,
-        current: currentWorld,
+        current: currentStagePoint,
         targetNodeId,
       });
       return;
@@ -714,7 +709,7 @@ export function CanvasStage({
     >
       <div className="canvas-grid" aria-hidden="true" />
       <div ref={viewportLayerRef} className="canvas-viewport">
-        <svg className="node-connections" aria-label="节点连线层">
+        <svg ref={connectionLayerRef} className="node-connections" aria-label="节点连线层">
           <defs>
             <linearGradient id="node-connection-gradient" gradientUnits="userSpaceOnUse" x1="0" x2="420">
               <stop offset="0" stopColor="#10bce5" />

@@ -29,7 +29,7 @@ export interface TabletUpdateProgress {
 }
 
 export async function getTabletVersion(): Promise<string> {
-  return isTauri() ? getVersion() : "0.1.5";
+  return isTauri() ? getVersion() : "0.1.6";
 }
 
 export async function checkTabletUpdate(): Promise<TabletUpdateInfo> {

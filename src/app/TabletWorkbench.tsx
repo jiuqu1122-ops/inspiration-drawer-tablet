@@ -91,7 +91,7 @@ export function TabletWorkbench() {
   const [nodePresets, setNodePresets] = useState<CanvasNodePresetDefinition[]>([]);
   const [hiddenWorkflowPresetIds, setHiddenWorkflowPresetIds] = useState<string[]>([]);
   const [serverSession, setServerSession] = useState<ServerSession>({ authenticated: false });
-  const [appVersion, setAppVersion] = useState("0.1.5");
+  const [appVersion, setAppVersion] = useState("0.1.6");
   const [availableUpdate, setAvailableUpdate] = useState<TabletUpdateInfo>();
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
