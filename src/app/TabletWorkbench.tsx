@@ -91,7 +91,7 @@ export function TabletWorkbench() {
   const [nodePresets, setNodePresets] = useState<CanvasNodePresetDefinition[]>([]);
   const [hiddenWorkflowPresetIds, setHiddenWorkflowPresetIds] = useState<string[]>([]);
   const [serverSession, setServerSession] = useState<ServerSession>({ authenticated: false });
-  const [appVersion, setAppVersion] = useState("0.1.4");
+  const [appVersion, setAppVersion] = useState("0.1.5");
   const [availableUpdate, setAvailableUpdate] = useState<TabletUpdateInfo>();
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
@@ -106,6 +106,7 @@ export function TabletWorkbench() {
   const assetsRef = useRef<CanvasAssetView[]>([]);
   const nodesRef = useRef<CanvasNode[]>([]);
   const projectsRef = useRef<CanvasProject[]>([]);
+  const deletingProjectIdsRef = useRef<Set<string>>(new Set());
   const runningNodeIdsRef = useRef<Set<string>>(new Set());
   // A generation can outlive the WebView while Android is locked/backgrounded.
   // Keep a separate set so focus/visibility events cannot start duplicate
@@ -316,6 +317,7 @@ export function TabletWorkbench() {
     }
 
     const timer = window.setTimeout(() => {
+      if (deletingProjectIdsRef.current.has(activeProjectId)) return;
       const now = Date.now();
       const existing = projectsRef.current.find((project) => project.id === activeProjectId);
       const project: CanvasProject = {
@@ -560,6 +562,45 @@ export function TabletWorkbench() {
       setNotice({ tone: "success", message: `项目已重命名为“${name}”` });
     } catch (error) {
       setNotice({ tone: "error", message: getErrorMessage(error, "项目重命名失败") });
+    }
+  };
+
+  const removeProject = async (projectId: string) => {
+    const target = projectsRef.current.find((project) => project.id === projectId);
+    if (!target) return;
+    if (!window.confirm(`确定删除项目“${target.name}”吗？该项目中的节点和连线都会被删除。`)) return;
+
+    deletingProjectIdsRef.current.add(projectId);
+    try {
+      const isActive = projectId === activeProjectId;
+      const remaining = projectsRef.current.filter((project) => project.id !== projectId);
+      let nextProjects = remaining;
+      if (!remaining.length) {
+        const replacement = createBlankProject(createId("tablet-project"), DEFAULT_PROJECT_NAME);
+        await tabletStorage.saveProject(replacement);
+        nextProjects = [replacement];
+      }
+
+      await tabletStorage.removeProject(projectId);
+      projectsRef.current = nextProjects;
+      setProjects(nextProjects);
+
+      if (isActive) {
+        const next = nextProjects[0];
+        setActiveProjectId(next.id);
+        setNodes(next.nodes.map(normalizeStoredNode));
+        setViewport(next.viewport);
+        setSelectedNodeId(undefined);
+        setIsResourceDrawerOpen(false);
+      }
+      setNotice({
+        tone: "success",
+        message: `项目“${target.name}”已删除${remaining.length ? "" : "，已创建新的空白项目"}`,
+      });
+    } catch (error) {
+      setNotice({ tone: "error", message: getErrorMessage(error, "删除项目失败") });
+    } finally {
+      deletingProjectIdsRef.current.delete(projectId);
     }
   };
 
@@ -1348,6 +1389,7 @@ export function TabletWorkbench() {
         onProjectCreate={() => void createProject()}
         onProjectSelect={(projectId) => void selectProject(projectId)}
         onProjectRename={(projectId, name) => void renameProject(projectId, name)}
+        onProjectRemove={(projectId) => void removeProject(projectId)}
         onChange={setResourceSection}
         onOpenChange={setIsResourceDrawerOpen}
         onImport={requestImageImport}

@@ -1746,7 +1746,8 @@ select:focus-visible {
   font-size: 8px;
 }
 
-.project-rename-action {
+.project-rename-action,
+.project-delete-action {
   display: grid;
   width: 40px;
   height: 40px;
@@ -1758,9 +1759,14 @@ select:focus-visible {
   background: var(--panel);
 }
 
-.project-rename-action svg {
+.project-rename-action svg,
+.project-delete-action svg {
   width: 16px;
   height: 16px;
+}
+
+.project-delete-action {
+  color: var(--danger);
 }
 
 .project-rename-form {
@@ -2633,6 +2639,7 @@ select:focus-visible {
 :root[data-theme="dark"] .project-row,
 :root[data-theme="dark"] .project-thumbnail,
 :root[data-theme="dark"] .project-rename-action,
+:root[data-theme="dark"] .project-delete-action,
 :root[data-theme="dark"] .project-rename-form input,
 :root[data-theme="dark"] .project-rename-form button,
 :root[data-theme="dark"] .canvas-tool-dock button:hover,

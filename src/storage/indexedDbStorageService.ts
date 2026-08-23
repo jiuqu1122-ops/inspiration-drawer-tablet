@@ -39,6 +39,10 @@ export class IndexedDbStorageService implements StorageService {
     await this.put(PROJECT_STORE, project);
   }
 
+  async removeProject(projectId: string): Promise<void> {
+    await this.delete(PROJECT_STORE, projectId);
+  }
+
   async importDeviceImage(input: DeviceImageImport): Promise<ImageAsset> {
     const blob = await fetch(input.sourceUri).then((response) => {
       if (!response.ok) {

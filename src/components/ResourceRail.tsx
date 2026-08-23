@@ -28,6 +28,7 @@ interface ResourceRailProps {
   onProjectCreate: () => void;
   onProjectSelect: (projectId: string) => void;
   onProjectRename: (projectId: string, name: string) => void;
+  onProjectRemove: (projectId: string) => void;
   onChange: (section: ResourceSection) => void;
   onOpenChange: (open: boolean) => void;
   onImport: () => void;
@@ -55,6 +56,7 @@ export function ResourceRail({
   onProjectCreate,
   onProjectSelect,
   onProjectRename,
+  onProjectRemove,
   onChange,
   onOpenChange,
   onImport,
@@ -176,6 +178,14 @@ export function ResourceRail({
                           }}
                         >
                           <PencilSimple />
+                        </button>
+                        <button
+                          className="project-delete-action"
+                          type="button"
+                          aria-label={`删除项目 ${project.name}`}
+                          onClick={() => onProjectRemove(project.id)}
+                        >
+                          <Trash />
                         </button>
                       </>
                     )}

@@ -321,19 +321,6 @@ export function CanvasStage({
     };
   };
 
-  const renderedStageToWorld = useCallback((point: CanvasPoint): CanvasPoint => {
-    const layer = viewportLayerRef.current;
-    const transform = layer ? window.getComputedStyle(layer).transform : "none";
-    const matrix = parseViewportTransform(transform);
-    if (!matrix) {
-      return stageToWorld(point);
-    }
-    return {
-      x: (point.x - matrix.translateX) / matrix.scaleX,
-      y: (point.y - matrix.translateY) / matrix.scaleY,
-    };
-  }, []);
-
   const getPortWorldPoint = useCallback((
     node: CanvasNode,
     selector: ".output-port" | ".input-port",
@@ -342,18 +329,23 @@ export function CanvasStage({
     const nodeElement = nodeElementsRef.current.get(node.id);
     const portElement = nodeElement?.querySelector<HTMLElement>(selector);
     if (!nodeElement || !portElement) return fallback;
-    const stageBounds = stageRef.current?.getBoundingClientRect();
+    const nodeBounds = nodeElement.getBoundingClientRect();
     const portBounds = portElement.getBoundingClientRect();
-    if (!stageBounds || portBounds.width <= 0) return fallback;
-    // Convert the measured screen-space center through the same viewport
-    // transform used by pointer gestures. This remains correct when the
-    // device has a non-1 DPR, display zoom, safe-area inset, or a live pinch
-    // transform that has not rendered through React yet.
-    return renderedStageToWorld({
-      x: portBounds.left + portBounds.width / 2 - stageBounds.left,
-      y: portBounds.top + portBounds.height / 2 - stageBounds.top,
-    });
-  }, [renderedStageToWorld]);
+    if (nodeBounds.width <= 0 || nodeBounds.height <= 0 || portBounds.width <= 0) return fallback;
+
+    // Use the port's position relative to its own node, rather than inverting
+    // the page/viewport transform. Both rectangles carry exactly the same
+    // Android WebView scale, display zoom, and CSS transform, so the ratio is
+    // stable even on devices where the reported transform matrix is stale.
+    const currentGesture = gestureRef.current;
+    const nodePosition = currentGesture?.mode === "drag" && currentGesture.nodeId === node.id
+      ? currentGesture.currentNode
+      : { x: node.x, y: node.y };
+    return {
+      x: nodePosition.x + ((portBounds.left + portBounds.width / 2 - nodeBounds.left) / nodeBounds.width) * node.width,
+      y: nodePosition.y + ((portBounds.top + portBounds.height / 2 - nodeBounds.top) / nodeBounds.height) * node.height,
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const nextPoints = Object.fromEntries(connections.map((connection) => [
@@ -1543,38 +1535,6 @@ function getOutputPoint(node: CanvasNode): CanvasPoint {
 function getInputPoint(node: CanvasGenerationNode | CanvasTextNode): CanvasPoint {
   // The input button is positioned with left:-28px and is 52px wide.
   return { x: node.x - 2, y: node.y + 76 };
-}
-
-function parseViewportTransform(transform: string): {
-  scaleX: number;
-  scaleY: number;
-  translateX: number;
-  translateY: number;
-} | undefined {
-  if (!transform || transform === "none") return undefined;
-  const values = transform
-    .replace(/^matrix(3d)?\(/, "")
-    .replace(/\)$/, "")
-    .split(",")
-    .map((value) => Number(value.trim()));
-  if (values.some((value) => !Number.isFinite(value))) return undefined;
-  if (transform.startsWith("matrix3d(")) {
-    const scaleX = values[0];
-    const scaleY = values[5];
-    const translateX = values[12];
-    const translateY = values[13];
-    if (!scaleX || !scaleY) return undefined;
-    return { scaleX, scaleY, translateX, translateY };
-  }
-  if (transform.startsWith("matrix(")) {
-    const scaleX = values[0];
-    const scaleY = values[3];
-    const translateX = values[4];
-    const translateY = values[5];
-    if (!scaleX || !scaleY) return undefined;
-    return { scaleX, scaleY, translateX, translateY };
-  }
-  return undefined;
 }
 
 function findNearbyConnection<T extends { start: CanvasPoint; end: CanvasPoint }>(
