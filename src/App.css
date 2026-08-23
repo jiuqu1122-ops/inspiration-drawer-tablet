@@ -17,6 +17,9 @@
   --danger: #a14238;
   --topbar-height: 52px;
   --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
   --app-top: calc(var(--topbar-height) + var(--safe-top));
 }
 
@@ -316,6 +319,11 @@ select:focus-visible {
   touch-action: none;
 }
 
+.canvas-node,
+.canvas-node [data-canvas-control="true"] {
+  touch-action: none;
+}
+
 .canvas-grid {
   position: absolute;
   inset: 0;
@@ -492,8 +500,8 @@ select:focus-visible {
   position: absolute;
   z-index: 8;
   display: grid;
-  width: 36px;
-  height: 44px;
+  width: 52px;
+  height: 60px;
   padding: 0;
   border: 0;
   place-items: center;
@@ -512,13 +520,13 @@ select:focus-visible {
 }
 
 .output-port {
-  top: calc(50% - 22px);
-  right: -20px;
+  top: calc(50% - 30px);
+  right: -28px;
 }
 
 .input-port {
-  top: 54px;
-  left: -20px;
+  top: 46px;
+  left: -28px;
 }
 
 .input-port span {
@@ -2417,7 +2425,7 @@ select:focus-visible {
 }
 
 .tablet-update-backdrop {
-  z-index: 120;
+  z-index: 220;
 }
 
 .tablet-update-dialog {
@@ -2810,8 +2818,8 @@ select:focus-visible {
 
   .resource-panel {
     top: calc(var(--app-top) + 8px);
-    bottom: 76px;
-    left: 8px;
+    bottom: calc(76px + var(--safe-bottom));
+    left: max(8px, var(--safe-left));
   }
 
   .resource-nav {
@@ -2830,22 +2838,37 @@ select:focus-visible {
 
   .canvas-tool-dock {
     top: auto;
-    right: auto;
-    bottom: 9px;
-    left: 50%;
+    right: max(8px, var(--safe-right));
+    bottom: max(9px, var(--safe-bottom));
+    left: max(8px, var(--safe-left));
+    min-width: 0;
     padding: 5px;
     flex-direction: row;
-    transform: translateX(-50%);
+    justify-content: stretch;
+    gap: 2px;
+    overflow: hidden;
+    transform: none;
   }
 
   .canvas-tool-dock button {
-    width: 54px;
+    width: auto;
+    min-width: 0;
     min-height: 49px;
     padding: 2px;
+    flex: 1 1 0;
     flex-direction: column;
     justify-content: center;
     gap: 2px;
     font-size: 8px;
+  }
+
+  .canvas-tool-dock button span {
+    display: block;
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: center;
   }
 
   .canvas-tool-dock button svg {
@@ -2856,7 +2879,8 @@ select:focus-visible {
   .tool-dock-divider {
     width: 1px;
     height: 34px;
-    margin: 7px 1px;
+    margin: 7px 0;
+    flex: 0 0 1px;
   }
 
   .gesture-hint {

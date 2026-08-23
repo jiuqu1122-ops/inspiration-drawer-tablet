@@ -259,7 +259,11 @@ export function CanvasStage({
       viewportLayerRef.current.style.transform =
         `translate3d(${next.x}px, ${next.y}px, 0) scale(${next.scale})`;
     }
-  }, []);
+    // The CSS transform is applied imperatively during a gesture and in an
+    // effect after React renders. Re-measure ports after it is on the layer so
+    // SVG connection points cannot retain a previous device/viewport matrix.
+    refreshConnectionLayout();
+  }, [refreshConnectionLayout]);
 
   useEffect(() => {
     applyViewport(viewport);
@@ -317,6 +321,19 @@ export function CanvasStage({
     };
   };
 
+  const renderedStageToWorld = useCallback((point: CanvasPoint): CanvasPoint => {
+    const layer = viewportLayerRef.current;
+    const transform = layer ? window.getComputedStyle(layer).transform : "none";
+    const matrix = parseViewportTransform(transform);
+    if (!matrix) {
+      return stageToWorld(point);
+    }
+    return {
+      x: (point.x - matrix.translateX) / matrix.scaleX,
+      y: (point.y - matrix.translateY) / matrix.scaleY,
+    };
+  }, []);
+
   const getPortWorldPoint = useCallback((
     node: CanvasNode,
     selector: ".output-port" | ".input-port",
@@ -327,14 +344,16 @@ export function CanvasStage({
     if (!nodeElement || !portElement) return fallback;
     const stageBounds = stageRef.current?.getBoundingClientRect();
     const portBounds = portElement.getBoundingClientRect();
-    const current = liveViewportRef.current;
-    const scale = Math.max(liveViewportRef.current.scale, MIN_SCALE);
     if (!stageBounds || portBounds.width <= 0) return fallback;
-    return {
-      x: (portBounds.left + portBounds.width / 2 - stageBounds.left - current.x) / scale,
-      y: (portBounds.top + portBounds.height / 2 - stageBounds.top - current.y) / scale,
-    };
-  }, []);
+    // Convert the measured screen-space center through the same viewport
+    // transform used by pointer gestures. This remains correct when the
+    // device has a non-1 DPR, display zoom, safe-area inset, or a live pinch
+    // transform that has not rendered through React yet.
+    return renderedStageToWorld({
+      x: portBounds.left + portBounds.width / 2 - stageBounds.left,
+      y: portBounds.top + portBounds.height / 2 - stageBounds.top,
+    });
+  }, [renderedStageToWorld]);
 
   useLayoutEffect(() => {
     const nextPoints = Object.fromEntries(connections.map((connection) => [
@@ -380,6 +399,41 @@ export function CanvasStage({
     };
   }, []);
 
+  const promoteToPinch = useCallback(() => {
+    clearLongPress();
+    clearConnectionPress();
+    const currentGesture = gestureRef.current;
+    if (currentGesture?.mode === "drag") {
+      onNodeMove(currentGesture.nodeId, currentGesture.currentNode);
+    }
+    if (currentGesture?.mode === "connect") {
+      setConnectionDraft(undefined);
+      setConnectionSourceId(undefined);
+    }
+    beginPinch();
+  }, [beginPinch, clearConnectionPress, clearLongPress, onNodeMove]);
+
+  const handlePointerDownCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== "touch") return;
+    activePointersRef.current.set(event.pointerId, getStagePoint(event));
+    if (activePointersRef.current.size < 2) return;
+
+    // Capture both fingers at the stage once a pinch begins. The first finger
+    // may have landed on a textarea, select, button, or image inside a node.
+    // Single-finger taps remain native controls; two fingers always control
+    // the canvas viewport.
+    event.preventDefault();
+    for (const pointerId of activePointersRef.current.keys()) {
+      try {
+        event.currentTarget.setPointerCapture(pointerId);
+      } catch {
+        // Some Android WebViews only allow capture by the original target.
+        // Pointer events still bubble through the canvas stage in that case.
+      }
+    }
+    promoteToPinch();
+  };
+
   const beginConnection = (
     event: ReactPointerEvent<HTMLButtonElement>,
     sourceNode: CanvasNode,
@@ -389,6 +443,10 @@ export function CanvasStage({
     }
     event.preventDefault();
     event.stopPropagation();
+    if (activePointersRef.current.size >= 2) {
+      promoteToPinch();
+      return;
+    }
     const stage = stageRef.current;
     if (!stage) {
       return;
@@ -453,17 +511,7 @@ export function CanvasStage({
     setConnectionMenu(undefined);
 
     if (activePointersRef.current.size >= 2) {
-      clearLongPress();
-      clearConnectionPress();
-      const currentGesture = gestureRef.current;
-      if (currentGesture?.mode === "drag") {
-        onNodeMove(currentGesture.nodeId, currentGesture.currentNode);
-      }
-      if (currentGesture?.mode === "connect") {
-        setConnectionDraft(undefined);
-        setConnectionSourceId(undefined);
-      }
-      beginPinch();
+      promoteToPinch();
       return;
     }
 
@@ -665,6 +713,7 @@ export function CanvasStage({
     <div
       ref={stageRef}
       className="canvas-stage"
+      onPointerDownCapture={handlePointerDownCapture}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={finishPointer}
@@ -1486,11 +1535,46 @@ function findConnectionTargetAtPoint(clientX: number, clientY: number): string |
 }
 
 function getOutputPoint(node: CanvasNode): CanvasPoint {
-  return { x: node.x + node.width + 8, y: node.y + node.height / 2 };
+  // The output button is positioned with right:-28px and is 52px wide, so
+  // its visible center is two world pixels beyond the node edge.
+  return { x: node.x + node.width + 2, y: node.y + node.height / 2 };
 }
 
 function getInputPoint(node: CanvasGenerationNode | CanvasTextNode): CanvasPoint {
-  return { x: node.x - 8, y: node.y + 76 };
+  // The input button is positioned with left:-28px and is 52px wide.
+  return { x: node.x - 2, y: node.y + 76 };
+}
+
+function parseViewportTransform(transform: string): {
+  scaleX: number;
+  scaleY: number;
+  translateX: number;
+  translateY: number;
+} | undefined {
+  if (!transform || transform === "none") return undefined;
+  const values = transform
+    .replace(/^matrix(3d)?\(/, "")
+    .replace(/\)$/, "")
+    .split(",")
+    .map((value) => Number(value.trim()));
+  if (values.some((value) => !Number.isFinite(value))) return undefined;
+  if (transform.startsWith("matrix3d(")) {
+    const scaleX = values[0];
+    const scaleY = values[5];
+    const translateX = values[12];
+    const translateY = values[13];
+    if (!scaleX || !scaleY) return undefined;
+    return { scaleX, scaleY, translateX, translateY };
+  }
+  if (transform.startsWith("matrix(")) {
+    const scaleX = values[0];
+    const scaleY = values[3];
+    const translateX = values[4];
+    const translateY = values[5];
+    if (!scaleX || !scaleY) return undefined;
+    return { scaleX, scaleY, translateX, translateY };
+  }
+  return undefined;
 }
 
 function findNearbyConnection<T extends { start: CanvasPoint; end: CanvasPoint }>(
