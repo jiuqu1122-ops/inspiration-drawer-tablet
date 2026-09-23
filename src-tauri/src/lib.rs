@@ -709,6 +709,28 @@ async fn list_server_image_models(app: tauri::AppHandle) -> Result<NativeChatMod
     let (status, payload) =
         authenticated_json_request(&app, &client, Method::GET, "v1/ai/images/models", None).await?;
     ensure_success(status, &payload, "生图模型列表获取失败")?;
+    // Some server versions include the full public catalog in the image
+    // response for desktop compatibility. Keep video-only IDs out of the
+    // image selector even when catalog entries do not carry modality yet.
+    let video_model_ids: Vec<String> = payload
+        .pointer("/videoChannels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|channel| {
+            channel
+                .pointer("/models")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let is_video_model = |id: &str| video_model_ids.iter().any(|video_id| video_id == id);
     let mut models: Vec<String> = payload
         .pointer("/models")
         .and_then(Value::as_array)
@@ -717,6 +739,7 @@ async fn list_server_image_models(app: tauri::AppHandle) -> Result<NativeChatMod
                 .iter()
                 .filter_map(Value::as_str)
                 .map(str::to_string)
+                .filter(|model| !is_video_model(model))
                 .collect()
         })
         .unwrap_or_default();
@@ -729,6 +752,15 @@ async fn list_server_image_models(app: tauri::AppHandle) -> Result<NativeChatMod
                 // This endpoint is image-only. Accept an omitted modality for
                 // transitional servers, while still excluding explicit chat/video entries.
                 .filter(|value| {
+                    let is_video_channel_model = value
+                        .pointer("/id")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .map(|id| is_video_model(id))
+                        .unwrap_or(false);
+                    if is_video_channel_model {
+                        return false;
+                    }
                     value
                         .pointer("/modality")
                         .and_then(Value::as_str)
@@ -762,7 +794,7 @@ async fn list_server_image_models(app: tauri::AppHandle) -> Result<NativeChatMod
     if let Some(values) = capability_map {
         for (id, capabilities) in values {
             let clean_id = id.trim();
-            if clean_id.is_empty() {
+            if clean_id.is_empty() || is_video_model(clean_id) {
                 continue;
             }
             if !models.iter().any(|value| value == clean_id) {
@@ -822,65 +854,90 @@ async fn list_server_video_models(app: tauri::AppHandle) -> Result<NativeChatMod
     let (status, payload) =
         authenticated_json_request(&app, &client, Method::GET, "v1/ai/catalog", None).await?;
     ensure_success(status, &payload, "瑙嗛妯″瀷鍒楄〃鑾峰彇澶辫触")?;
-    let mut catalog = Vec::new();
-    if let Some(values) = payload.pointer("/catalog").and_then(Value::as_array) {
-        for value in values {
-            if value
-                .pointer("/modality")
-                .and_then(Value::as_str)
-                .map(|item| !item.eq_ignore_ascii_case("video"))
-                .unwrap_or(true)
-            {
-                continue;
-            }
-            let Some(id) = value
-                .pointer("/id")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-            else {
-                continue;
-            };
-            catalog.push(NativeImageModel {
-                id: id.to_string(),
-                display_name: value
-                    .pointer("/displayName")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                modality: Some("video".to_string()),
-                capabilities: value.pointer("/capabilities").cloned(),
-            });
-        }
-    }
-    if catalog.is_empty() {
-        if let Some(channels) = payload.pointer("/videoChannels").and_then(Value::as_array) {
-            for channel in channels {
-                let channel_caps = channel
-                    .pointer("/modelCapabilities")
-                    .and_then(Value::as_object);
-                if let Some(models) = channel.pointer("/models").and_then(Value::as_array) {
-                    for model in models
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::trim)
-                        .filter(|item| !item.is_empty())
-                    {
-                        catalog.push(NativeImageModel {
-                            id: model.to_string(),
-                            display_name: Some(model.to_string()),
-                            modality: Some("video".to_string()),
-                            capabilities: channel_caps.and_then(|caps| caps.get(model).cloned()),
-                        });
-                    }
-                }
-            }
-        }
-    }
-    let models = catalog.iter().map(|model| model.id.clone()).collect();
     let default_model = payload
         .pointer("/defaultVideoModel")
         .and_then(Value::as_str)
         .map(str::to_string);
+    let mut catalog = Vec::new();
+    // The current catalog endpoint returns model objects under `models`,
+    // while older desktop-oriented responses used `catalog`. Read both.
+    for path in ["/models", "/catalog"] {
+        if let Some(values) = payload.pointer(path).and_then(Value::as_array) {
+            for value in values {
+                let Some(modality) = value.pointer("/modality").and_then(Value::as_str) else {
+                    continue;
+                };
+                if !modality.eq_ignore_ascii_case("video") {
+                    continue;
+                }
+                let Some(id) = value
+                    .pointer("/id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                else {
+                    continue;
+                };
+                if catalog
+                    .iter()
+                    .any(|model: &NativeImageModel| model.id == id)
+                {
+                    continue;
+                }
+                catalog.push(NativeImageModel {
+                    id: id.to_string(),
+                    display_name: value
+                        .pointer("/displayName")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    modality: Some("video".to_string()),
+                    capabilities: value.pointer("/capabilities").cloned(),
+                });
+            }
+        }
+    }
+    // Transitional servers expose video availability in channel metadata.
+    if let Some(channels) = payload.pointer("/videoChannels").and_then(Value::as_array) {
+        for channel in channels {
+            let channel_caps = channel
+                .pointer("/modelCapabilities")
+                .and_then(Value::as_object);
+            if let Some(models) = channel.pointer("/models").and_then(Value::as_array) {
+                for model in models
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                {
+                    if catalog
+                        .iter()
+                        .any(|entry: &NativeImageModel| entry.id == model)
+                    {
+                        continue;
+                    }
+                    catalog.push(NativeImageModel {
+                        id: model.to_string(),
+                        display_name: Some(model.to_string()),
+                        modality: Some("video".to_string()),
+                        capabilities: channel_caps.and_then(|caps| caps.get(model).cloned()),
+                    });
+                }
+            }
+        }
+    }
+    if let Some(default_model) = default_model.as_deref() {
+        if !default_model.trim().is_empty()
+            && !catalog.iter().any(|model| model.id == default_model)
+        {
+            catalog.push(NativeImageModel {
+                id: default_model.trim().to_string(),
+                display_name: Some(default_model.trim().to_string()),
+                modality: Some("video".to_string()),
+                capabilities: None,
+            });
+        }
+    }
+    let models = catalog.iter().map(|model| model.id.clone()).collect();
     Ok(NativeChatModels {
         models,
         default_model,
