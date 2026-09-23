@@ -9,7 +9,6 @@ import type {
 import {
   buildImageRulePrompt,
   buildImageGenerationPrompt,
-  isImageModelPresetId,
 } from "../../shared";
 import { createId } from "../utils/id";
 
@@ -46,8 +45,9 @@ export class TauriImageGenerationService implements ImageGenerationService {
     if (request.model.provider !== "server-gateway") {
       throw new Error("移动端只能通过 Inspiration Drawer 服务端网关生图");
     }
-    if (!isImageModelPresetId(request.model.model)) {
-      throw new Error("请选择移动端预设的生图模型");
+    const model = request.model.model.trim();
+    if (!model || model.length > 200 || !/^[a-zA-Z0-9._:/-]+$/.test(model)) {
+      throw new Error("生图模型标识无效");
     }
 
     const references = await Promise.all(
@@ -76,7 +76,7 @@ export class TauriImageGenerationService implements ImageGenerationService {
       return this.generateSingle(
         {
           requestId: taskRequestId,
-          model: request.model.model,
+          model,
           prompt: [basePrompt, variationPrompt].filter(Boolean).join("\n\n"),
           aspectRatio,
           resolution: request.resolution,
@@ -183,20 +183,19 @@ export class TauriImageGenerationService implements ImageGenerationService {
   }
 }
 
-function normalizeGatewayAspectRatio(value: string): "1:1" | "3:4" | "4:3" | "9:16" | "16:9" {
-  const clean = String(value || "").trim().replace(/[^0-9:]/g, "x");
-  if (["1:1", "3:4", "4:3", "9:16", "16:9"].includes(clean)) {
-    return clean as "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
+function normalizeGatewayAspectRatio(value: string): string {
+  const clean = String(value || "")
+    .trim()
+    .replace(/[×X]/g, "x");
+  if (["1:1", "3:4", "4:3", "9:16", "16:9"].includes(clean)) return clean;
+  // The server catalog may publish an exact output size (for example
+  // 2048x1152). Preserve it all the way to the gateway instead of collapsing
+  // it to a nearby standard ratio.
+  if (/^\d{2,5}x\d{2,5}$/.test(clean)) {
+    const [width, height] = clean.split("x").map(Number);
+    if (width >= 64 && height >= 64 && width <= 8192 && height <= 8192) return clean;
   }
-  const [width, height] = clean.split(/[x:]/).map(Number);
-  const target = width > 0 && height > 0 ? width / height : 16 / 9;
-  return (["1:1", "3:4", "4:3", "9:16", "16:9"] as const).reduce((best, candidate) => {
-    const [bestW, bestH] = best.split(":").map(Number);
-    const [candidateW, candidateH] = candidate.split(":").map(Number);
-    return Math.abs(candidateW / candidateH - target) < Math.abs(bestW / bestH - target)
-      ? candidate
-      : best;
-  }, "16:9");
+  return "16:9";
 }
 
 function assertTauriRuntime(): void {

@@ -9,12 +9,14 @@ import type {
   CanvasProject,
   CanvasRuleNode,
   CanvasTextNode,
+  CanvasVideoNode,
   CanvasViewport,
   GeneratedImageResult,
   ImageAsset,
   ImageGenerationRequest,
   ImageRulePresetId,
   ImageRuleState,
+  VideoGenerationRequest,
   WorkflowDefinition,
 } from "../../shared";
 import {
@@ -33,21 +35,28 @@ import { TopBar } from "../components/TopBar";
 import {
   CanvasStage,
   type CanvasAssetView,
+  type CanvasImageModelOption,
+  type CanvasVideoModelOption,
   type GenerationNodeUpdate,
+  type VideoNodeUpdate,
 } from "../features/canvas/CanvasStage";
+import { ChatPanel } from "../features/chat/ChatPanel";
 import { readDeviceImage } from "../features/inspiration/readDeviceImages";
 import { WorkflowLibrary } from "../features/workflow/WorkflowLibrary";
 import { TabletUpdateDialog } from "../features/app-update/TabletUpdateDialog";
 import { TauriImageGenerationService } from "../services/tauriImageGenerationService";
+import { TauriVideoGenerationService } from "../services/tauriVideoGenerationService";
 import { generateTextWithServer } from "../services/tauriTextGenerationService";
 import {
   getServerSession,
   type ServerSession,
 } from "../services/tauriServerSessionService";
+import { listServerImageModels, listServerVideoModels } from "../services/tauriChatService";
 import {
   checkTabletUpdate,
   getTabletVersion,
   installTabletUpdate,
+  prepareTabletUpdate,
   type TabletUpdateInfo,
   type TabletUpdateProgress,
 } from "../services/tabletUpdateService";
@@ -61,6 +70,10 @@ const DEFAULT_VIEWPORT: CanvasViewport = { x: 0, y: 0, scale: 1 };
 const MANAGED_IMAGE_MODEL = {
   provider: "server-gateway" as const,
   model: "nano-banana-pro",
+};
+const MANAGED_VIDEO_MODEL = {
+  provider: "server-gateway" as const,
+  model: "seedance-2.0",
 };
 const THEME_STORAGE_KEY = "inspiration-drawer-tablet-theme";
 const UPDATE_CHECK_STORAGE_KEY = "inspiration-drawer-tablet-update-checked-at";
@@ -82,16 +95,22 @@ export function TabletWorkbench() {
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [viewport, setViewport] = useState(DEFAULT_VIEWPORT);
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
+  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set());
   const [notice, setNotice] = useState<WorkbenchNotice>();
   const [isImporting, setIsImporting] = useState(false);
   const [isAccountDialogOpen, setIsAccountDialogOpen] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(false);
   const [isWorkflowLibraryOpen, setIsWorkflowLibraryOpen] = useState(false);
   const [isTemplateImporting, setIsTemplateImporting] = useState(false);
   const [customWorkflows, setCustomWorkflows] = useState<WorkflowDefinition[]>([]);
   const [nodePresets, setNodePresets] = useState<CanvasNodePresetDefinition[]>([]);
   const [hiddenWorkflowPresetIds, setHiddenWorkflowPresetIds] = useState<string[]>([]);
   const [serverSession, setServerSession] = useState<ServerSession>({ authenticated: false });
-  const [appVersion, setAppVersion] = useState("0.1.7");
+  const [imageModelOptions, setImageModelOptions] = useState<CanvasImageModelOption[]>([]);
+  const [defaultImageModel, setDefaultImageModel] = useState<string>(MANAGED_IMAGE_MODEL.model);
+  const [videoModelOptions, setVideoModelOptions] = useState<CanvasVideoModelOption[]>([]);
+  const [defaultVideoModel, setDefaultVideoModel] = useState<string>(MANAGED_VIDEO_MODEL.model);
+  const [appVersion, setAppVersion] = useState("0.1.15");
   const [availableUpdate, setAvailableUpdate] = useState<TabletUpdateInfo>();
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
@@ -112,6 +131,11 @@ export function TabletWorkbench() {
   // Keep a separate set so focus/visibility events cannot start duplicate
   // recovery calls for the same canvas node.
   const recoveringNodeIdsRef = useRef<Set<string>>(new Set());
+
+  const selectSingleNode = useCallback((nodeId?: string) => {
+    setSelectedNodeId(nodeId);
+    setSelectedNodeIds(nodeId ? new Set([nodeId]) : new Set());
+  }, []);
 
   const updateNodesState = useCallback((updater: (current: CanvasNode[]) => CanvasNode[]) => {
     setNodes((current) => {
@@ -138,6 +162,14 @@ export function TabletWorkbench() {
   }, [nodes]);
 
   useEffect(() => {
+    const ids = new Set(nodes.map((node) => node.id));
+    setSelectedNodeIds((current) => {
+      const next = new Set([...current].filter((id) => ids.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [nodes]);
+
+  useEffect(() => {
     projectsRef.current = projects;
   }, [projects]);
 
@@ -156,7 +188,7 @@ export function TabletWorkbench() {
       const progress = event.payload;
       setUpdateProgress(progress.progress);
       setUpdateMessage(progress.stage === "verified"
-        ? "安全校验通过，正在打开系统安装器"
+        ? "更新包安全校验通过"
         : `正在下载更新 ${progress.progress}%`);
     }).then((dispose) => {
       unlisten = dispose;
@@ -171,11 +203,24 @@ export function TabletWorkbench() {
       const result = await checkTabletUpdate();
       setAvailableUpdate(result.available ? result : undefined);
       if (result.available) {
-        // Keep the update dialog above every other modal, including AccountDialog.
-        setIsAccountDialogOpen(false);
-        setUpdateMessage(undefined);
-        setUpdateProgress(0);
-        setIsUpdateDialogOpen(true);
+        if (silent) {
+          setUpdateMessage("正在后台预下载更新包");
+          setUpdateProgress(0);
+          void prepareTabletUpdate().then(() => {
+            setUpdateProgress(100);
+            setUpdateMessage("更新包已在后台准备好，点击即可安装");
+            setIsAccountDialogOpen(false);
+            setIsUpdateDialogOpen(true);
+          }).catch(() => {
+            // A failed pre-download must not block manual download and install.
+          });
+        } else {
+          // Keep the update dialog above every other modal, including AccountDialog.
+          setIsAccountDialogOpen(false);
+          setUpdateMessage(undefined);
+          setUpdateProgress(0);
+          setIsUpdateDialogOpen(true);
+        }
       } else if (!silent) {
         setNotice({ tone: "success", message: `当前已是最新版本 ${result.currentVersion}` });
       }
@@ -259,6 +304,60 @@ export function TabletWorkbench() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!serverSession.authenticated) {
+      setImageModelOptions([]);
+      setDefaultImageModel(MANAGED_IMAGE_MODEL.model);
+      setVideoModelOptions([]);
+      setDefaultVideoModel(MANAGED_VIDEO_MODEL.model);
+      return () => {
+        cancelled = true;
+      };
+    }
+    void Promise.all([listServerImageModels(), listServerVideoModels()])
+      .then(([result, videoResult]) => {
+        if (cancelled) return;
+        const options = (result.catalog ?? [])
+          .filter((model) => model.id.trim())
+          .map((model) => ({
+            id: model.id.trim(),
+            displayName: model.displayName?.trim() || model.id.trim(),
+            capabilities: model.capabilities,
+          } satisfies CanvasImageModelOption));
+        const fallback = result.models
+          .filter((model) => model.trim())
+          .filter((model) => !options.some((option) => option.id === model.trim()))
+          .map((id) => ({ id: id.trim(), displayName: id.trim() } satisfies CanvasImageModelOption));
+        setImageModelOptions(options.length ? options : fallback);
+        setDefaultImageModel(result.defaultModel?.trim() || options[0]?.id || fallback[0]?.id || MANAGED_IMAGE_MODEL.model);
+        const videoOptions = (videoResult.catalog ?? [])
+          .filter((model) => model.id.trim())
+          .map((model) => ({
+            id: model.id.trim(),
+            displayName: model.displayName?.trim() || model.id.trim(),
+            capabilities: model.capabilities,
+          } satisfies CanvasVideoModelOption));
+        const videoFallback = videoResult.models
+          .filter((model) => model.trim())
+          .filter((model) => !videoOptions.some((option) => option.id === model.trim()))
+          .map((id) => ({ id: id.trim(), displayName: id.trim() } satisfies CanvasVideoModelOption));
+        setVideoModelOptions(videoOptions.length ? videoOptions : videoFallback);
+        setDefaultVideoModel(videoResult.defaultModel?.trim() || videoOptions[0]?.id || videoFallback[0]?.id || MANAGED_VIDEO_MODEL.model);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setImageModelOptions([]);
+          setDefaultImageModel(MANAGED_IMAGE_MODEL.model);
+          setVideoModelOptions([]);
+          setDefaultVideoModel(MANAGED_VIDEO_MODEL.model);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [serverSession.authenticated]);
 
   useEffect(() => {
     let cancelled = false;
@@ -377,13 +476,22 @@ export function TabletWorkbench() {
       setAssets((current) => [...imported.slice().reverse(), ...current]);
       setNodes((current) => {
         const center = getViewportCenter(viewport);
-        const appended = imported.map((entry, index) =>
-          createImageNode(entry.asset, current.length + index, {
-            x: center.x - 360 + index * 34,
-            y: center.y - 170 + index * 30,
-          }),
-        );
-        setSelectedNodeId(appended[appended.length - 1]?.id);
+        const occupied = [...current];
+        const appended = imported.map((entry, index) => {
+          const node = createImageNode(
+            entry.asset,
+            occupied.length + index,
+            findAvailableNodePoint(
+              occupied,
+              { x: center.x + index * 48, y: center.y + index * 42 },
+              fitCanvasSize(entry.asset).width,
+              fitCanvasSize(entry.asset).height,
+            ),
+          );
+          occupied.push(node);
+          return node;
+        });
+        selectSingleNode(appended[appended.length - 1]?.id);
         return [...current, ...appended];
       });
       setResourceSection("materials");
@@ -402,7 +510,7 @@ export function TabletWorkbench() {
   const addAssetToCanvas = (assetId: string) => {
     const existing = nodes.find((node) => node.type === "image" && node.assetId === assetId);
     if (existing) {
-      setSelectedNodeId(existing.id);
+      selectSingleNode(existing.id);
       setIsResourceDrawerOpen(false);
       return;
     }
@@ -411,12 +519,14 @@ export function TabletWorkbench() {
       return;
     }
     const center = getViewportCenter(viewport);
-    const node = createImageNode(asset, nodes.length, {
-      x: center.x - 160,
-      y: center.y - 120,
-    });
+    const size = fitCanvasSize(asset);
+    const node = createImageNode(
+      asset,
+      nodesRef.current.length,
+      findAvailableNodePoint(nodesRef.current, center, size.width, size.height),
+    );
     setNodes((current) => [...current, node]);
-    setSelectedNodeId(node.id);
+    selectSingleNode(node.id);
     setIsResourceDrawerOpen(false);
   };
 
@@ -442,6 +552,7 @@ export function TabletWorkbench() {
       setAssets((current) => current.filter((candidate) => candidate.asset.id !== assetId));
       setNodes(currentNodes);
       setProjects(nextProjects);
+      setSelectedNodeIds((current) => new Set([...current].filter((id) => currentNodes.some((node) => node.id === id))));
       setSelectedNodeId((current) => current && currentNodes.some((node) => node.id === current) ? current : undefined);
       setNotice({ tone: "success", message: "设备素材及其画布引用已移除" });
     } catch (error) {
@@ -482,6 +593,7 @@ export function TabletWorkbench() {
       updateAssetsState((current) => current.filter((candidate) => candidate.asset.id !== assetId));
       updateNodesState(() => currentNodes);
       setProjects(nextProjects);
+      setSelectedNodeIds((current) => new Set([...current].filter((id) => currentNodes.some((node) => node.id === id))));
       setSelectedNodeId((current) => current && currentNodes.some((node) => node.id === current) ? current : undefined);
       setNotice({ tone: "success", message: "生成结果已删除" });
     } catch (error) {
@@ -518,7 +630,7 @@ export function TabletWorkbench() {
       setActiveProjectId(project.id);
       setNodes([]);
       setViewport(DEFAULT_VIEWPORT);
-      setSelectedNodeId(undefined);
+      selectSingleNode(undefined);
       setNotice({ tone: "success", message: `已创建“${project.name}”` });
     } catch (error) {
       setNotice({ tone: "error", message: getErrorMessage(error, "新建项目失败") });
@@ -538,7 +650,7 @@ export function TabletWorkbench() {
       setActiveProjectId(target.id);
       setNodes(target.nodes.map(normalizeStoredNode));
       setViewport(target.viewport);
-      setSelectedNodeId(undefined);
+      selectSingleNode(undefined);
       setIsResourceDrawerOpen(false);
     } catch (error) {
       setNotice({ tone: "error", message: getErrorMessage(error, "切换项目失败") });
@@ -590,7 +702,7 @@ export function TabletWorkbench() {
         setActiveProjectId(next.id);
         setNodes(next.nodes.map(normalizeStoredNode));
         setViewport(next.viewport);
-        setSelectedNodeId(undefined);
+      selectSingleNode(undefined);
         setIsResourceDrawerOpen(false);
       }
       setNotice({
@@ -610,43 +722,69 @@ export function TabletWorkbench() {
       id: createId("generation-request"),
       prompt: "",
       inputAssetIds: [],
-      model: MANAGED_IMAGE_MODEL,
+      model: { ...MANAGED_IMAGE_MODEL, model: defaultImageModel },
       aspectRatio: "16:9",
       resolution: "2k",
       count: 4,
       createdAt: Date.now(),
     };
-    const generationNode = createGenerationNode(request, nodes.length, {
-      x: center.x - 186,
-      y: center.y - 250,
-    });
+    const generationNode = createGenerationNode(
+      request,
+      nodesRef.current.length,
+      findAvailableNodePoint(nodesRef.current, center, 372, 574),
+    );
     setNodes((current) => [...current, generationNode]);
-    setSelectedNodeId(generationNode.id);
+    selectSingleNode(generationNode.id);
     setIsResourceDrawerOpen(false);
     setNotice({ tone: "neutral", message: "已创建生图节点，在节点内描述想生成的图片即可运行" });
+  };
+
+  const addVideoNode = () => {
+    const center = getViewportCenter(viewport);
+    const request: VideoGenerationRequest = {
+      id: createId("video-request"),
+      prompt: "",
+      inputAssetIds: [],
+      model: { ...MANAGED_VIDEO_MODEL, model: defaultVideoModel },
+      aspectRatio: "16:9",
+      resolution: "720p",
+      duration: 5,
+      inputMode: "REF",
+      count: 1,
+      createdAt: Date.now(),
+    };
+    const node = createVideoNode(request, nodesRef.current.length, findAvailableNodePoint(nodesRef.current, center, 420, 590));
+    updateNodesState((current) => [...current, node]);
+    selectSingleNode(node.id);
+    setIsResourceDrawerOpen(false);
+    setNotice({ tone: "neutral", message: "已创建视频节点，输入镜头描述后即可运行" });
   };
 
   const addRuleNode = () => {
     const center = getViewportCenter(viewport);
     const preset = IMAGE_RULE_PRESETS[0];
-    const node = createRuleNode(preset.id, preset.name, preset.rules, nodes.length, {
-      x: center.x - 410,
-      y: center.y - 190,
-    });
+    const node = createRuleNode(
+      preset.id,
+      preset.name,
+      preset.rules,
+      nodesRef.current.length,
+      findAvailableNodePoint(nodesRef.current, center, 292, 342),
+    );
     setNodes((current) => [...current, node]);
-    setSelectedNodeId(node.id);
+    selectSingleNode(node.id);
     setIsResourceDrawerOpen(false);
     setNotice({ tone: "neutral", message: "已创建规则节点，从右侧输出点拖到生图节点即可应用" });
   };
 
   const addTextNode = () => {
     const center = getViewportCenter(viewport);
-    const node = createTextNode("文字 LLM", nodes.length, {
-      x: center.x - 180,
-      y: center.y - 210,
-    });
+    const node = createTextNode(
+      "文字 LLM",
+      nodesRef.current.length,
+      findAvailableNodePoint(nodesRef.current, center, 360, 448),
+    );
     updateNodesState((current) => [...current, node]);
-    setSelectedNodeId(node.id);
+    selectSingleNode(node.id);
     setNotice({ tone: "neutral", message: "已创建文字 LLM 节点，可连接到生图或下一个文字节点" });
   };
 
@@ -657,7 +795,7 @@ export function TabletWorkbench() {
       y: center.y - 260,
     });
     updateNodesState((current) => [...current, ...workflowNodes]);
-    setSelectedNodeId(workflowNodes[0]?.id);
+    selectSingleNode(workflowNodes[0]?.id);
     setIsWorkflowLibraryOpen(false);
     setNotice({ tone: "success", message: `已添加工作流“${workflow.name}”，选择其中任一节点后可整组运行` });
   };
@@ -672,21 +810,22 @@ export function TabletWorkbench() {
       id: createId("generation-request"),
       prompt: preset.prompt,
       inputAssetIds: [],
-      model: MANAGED_IMAGE_MODEL,
+      model: { ...MANAGED_IMAGE_MODEL, model: defaultImageModel },
       aspectRatio: normalizeImageAspectRatio(model.id, resolution, preset.aspectRatio),
       resolution,
       count: Math.min(4, Math.max(1, Math.round(preset.count))),
       createdAt: Date.now(),
     };
     const node = {
-      ...createGenerationNode(request, nodesRef.current.length, {
-        x: center.x - 186,
-        y: center.y - 250,
-      }),
+      ...createGenerationNode(
+        request,
+        nodesRef.current.length,
+        findAvailableNodePoint(nodesRef.current, center, 372, 574),
+      ),
       title: preset.name,
     };
     updateNodesState((current) => [...current, node]);
-    setSelectedNodeId(node.id);
+    selectSingleNode(node.id);
     setIsWorkflowLibraryOpen(false);
     setNotice({ tone: "success", message: `已添加节点预设“${preset.name}”` });
   };
@@ -787,6 +926,14 @@ export function TabletWorkbench() {
         ? { ...node, request: { ...node.request, ...update } }
         : node,
     ));
+  };
+
+  const updateVideoNode = (nodeId: string, update: VideoNodeUpdate) => {
+    updateNodesState((current) => current.map((node) => (
+      node.id === nodeId && node.type === "video"
+        ? { ...node, request: { ...node.request, ...update } }
+        : node
+    )));
   };
 
   const updateRuleNode = (
@@ -939,6 +1086,36 @@ export function TabletWorkbench() {
     return storedResults;
   }, [updateAssetsState, updateNodesState]);
 
+  const saveChatGeneratedImages = useCallback(async (
+    results: GeneratedImageResult[],
+    request: ImageGenerationRequest,
+  ) => {
+    const savedEntries = await Promise.all(results.map(async (result, index) => {
+      const asset = await tabletStorage.saveGeneratedImage(createGeneratedAsset(result, request, index));
+      return {
+        asset,
+        displayUri: await tabletStorage.resolveDisplayUri(asset),
+      } satisfies CanvasAssetView;
+    }));
+    updateAssetsState((current) => [...savedEntries.slice().reverse(), ...current]);
+    const center = getViewportCenter(viewport);
+    const occupied = [...nodesRef.current];
+    const imageNodes = savedEntries.map(({ asset }, index) => {
+      const size = fitCanvasSize(asset);
+      const node = createImageNode(
+        asset,
+        occupied.length + index,
+        findAvailableNodePoint(occupied, { x: center.x + index * 42, y: center.y + index * 36 }, size.width, size.height),
+      );
+      occupied.push(node);
+      return node;
+    });
+    updateNodesState((current) => [...current, ...imageNodes]);
+    selectSingleNode(imageNodes[imageNodes.length - 1]?.id);
+    setIsResourceDrawerOpen(false);
+    setNotice({ tone: "success", message: `Chat 鐢熸垚鐨?${imageNodes.length} 寮犲浘鐗囧凡鍔犲叆鐢诲竷` });
+  }, [updateAssetsState, updateNodesState, viewport]);
+
   const runGenerationNode = async (nodeId: string, quiet = false): Promise<boolean> => {
     const sourceNode = nodesRef.current.find((node): node is CanvasGenerationNode => node.id === nodeId && node.type === "generation");
     if (!sourceNode) {
@@ -976,7 +1153,7 @@ export function TabletWorkbench() {
       const nextNodes = [...nodesRef.current, nextNode];
       nodesRef.current = nextNodes;
       setNodes(nextNodes);
-      setSelectedNodeId(nextNode.id);
+      selectSingleNode(nextNode.id);
       return runGenerationNode(nextNode.id, quiet);
     }
     const cleanPrompt = sourceNode.request.prompt.trim();
@@ -1002,7 +1179,7 @@ export function TabletWorkbench() {
         ? { ...node, request, status: "running", error: undefined }
         : node,
     ));
-    setSelectedNodeId(nodeId);
+    selectSingleNode(nodeId);
     if (!quiet) setNotice({ tone: "neutral", message: `正在运行生图节点：${sourceNode.title}` });
 
     try {
@@ -1065,6 +1242,61 @@ export function TabletWorkbench() {
           ? { ...node, status: "error", error: message }
           : node,
       ));
+      setNotice({ tone: "error", message });
+      return false;
+    } finally {
+      runningNodeIdsRef.current.delete(nodeId);
+    }
+  };
+
+  const runVideoNode = async (nodeId: string, quiet = false): Promise<boolean> => {
+    const sourceNode = nodesRef.current.find((node): node is CanvasVideoNode => node.id === nodeId && node.type === "video");
+    if (!sourceNode || runningNodeIdsRef.current.has(nodeId)) return false;
+    if (sourceNode.results.length > 0) {
+      const nextRequest: VideoGenerationRequest = { ...sourceNode.request, id: createId("video-request"), createdAt: Date.now() };
+      const nextNode = createVideoNode(nextRequest, nodesRef.current.length, findAvailableNodePoint(nodesRef.current, { x: sourceNode.x + sourceNode.width + 72, y: sourceNode.y + sourceNode.height / 2 }, 420, 590));
+      nextNode.title = sourceNode.title;
+      updateNodesState((current) => [...current, nextNode]);
+      selectSingleNode(nextNode.id);
+      return runVideoNode(nextNode.id, quiet);
+    }
+    const cleanPrompt = sourceNode.request.prompt.trim();
+    if (!cleanPrompt) {
+      setNotice({ tone: "error", message: "请先在视频节点中输入镜头描述" });
+      return false;
+    }
+    if (!serverSession.authenticated) {
+      setIsAccountDialogOpen(true);
+      setNotice({ tone: "neutral", message: "请先登录已绑定额度的邮箱，再运行视频节点" });
+      return false;
+    }
+    runningNodeIdsRef.current.add(nodeId);
+    const request: VideoGenerationRequest = { ...sourceNode.request, id: createId("video-request"), prompt: cleanPrompt, createdAt: Date.now() };
+    updateNodesState((current) => current.map((node) => node.id === nodeId && node.type === "video" ? { ...node, request, status: "running", error: undefined } : node));
+    selectSingleNode(nodeId);
+    if (!quiet) setNotice({ tone: "neutral", message: `正在运行视频节点：${sourceNode.title}` });
+    try {
+      const upstreamAssetIds = (request.upstreamNodeIds ?? []).flatMap((upstreamNodeId) => {
+        const upstream = nodesRef.current.find((node) => node.id === upstreamNodeId);
+        return upstream?.type === "generation" ? upstream.results.map((result) => result.id) : [];
+      });
+      const textContext = (request.textNodeIds ?? []).flatMap((textNodeId) => {
+        const textNode = nodesRef.current.find((node) => node.id === textNodeId);
+        return textNode?.type === "text" && textNode.output.trim() ? [`上游文字节点“${textNode.title}”：\n${textNode.output.trim()}`] : [];
+      });
+      const executionRequest = { ...request, prompt: [request.prompt, ...textContext].filter(Boolean).join("\n\n"), inputAssetIds: Array.from(new Set([...request.inputAssetIds, ...upstreamAssetIds])) };
+      const inputAssets = executionRequest.inputAssetIds
+        .map((assetId) => assetsRef.current.find((entry) => entry.asset.id === assetId))
+        .map((entry) => entry ? { ...entry.asset, uri: entry.displayUri } : undefined)
+        .filter((asset): asset is ImageAsset => Boolean(asset));
+      const results = await new TauriVideoGenerationService().generate(executionRequest, inputAssets);
+      updateNodesState((current) => current.map((node) => node.id === nodeId && node.type === "video" ? { ...node, status: "success", results, error: undefined } : node));
+      if (!quiet) setNotice({ tone: "success", message: `已生成 ${results.length} 个视频结果` });
+      void getServerSession().then(setServerSession).catch(() => undefined);
+      return true;
+    } catch (error) {
+      const message = getErrorMessage(error, "视频生成失败");
+      updateNodesState((current) => current.map((node) => node.id === nodeId && node.type === "video" ? { ...node, status: "error", error: message } : node));
       setNotice({ tone: "error", message });
       return false;
     } finally {
@@ -1143,38 +1375,51 @@ export function TabletWorkbench() {
         if ((source.type !== "text" && source.type !== "generation") || node.inputNodeIds.includes(source.id)) return node;
         return { ...node, inputNodeIds: [...node.inputNodeIds, source.id] };
       }
-      if (node.type !== "generation") return node;
-      if (source.type === "image") {
-        if (node.request.inputAssetIds.includes(source.assetId)) return node;
-        return { ...node, request: { ...node.request, inputAssetIds: [...node.request.inputAssetIds, source.assetId] } };
+      if (node.type === "generation") {
+        if (source.type === "image") {
+          if (node.request.inputAssetIds.includes(source.assetId)) return node;
+          return { ...node, request: { ...node.request, inputAssetIds: [...node.request.inputAssetIds, source.assetId] } };
+        }
+        if (source.type === "rule") {
+          if ((node.request.ruleNodeIds ?? []).includes(source.id)) return node;
+          return { ...node, request: { ...node.request, ruleNodeIds: [...(node.request.ruleNodeIds ?? []), source.id] } };
+        }
+        if (source.type === "text") {
+          if ((node.request.textNodeIds ?? []).includes(source.id)) return node;
+          return { ...node, request: { ...node.request, textNodeIds: [...(node.request.textNodeIds ?? []), source.id] } };
+        }
+        if ((node.request.upstreamNodeIds ?? []).includes(source.id)) return node;
+        return { ...node, request: { ...node.request, upstreamNodeIds: [...(node.request.upstreamNodeIds ?? []), source.id] } };
       }
-      if (source.type === "rule") {
-        if ((node.request.ruleNodeIds ?? []).includes(source.id)) return node;
-        return { ...node, request: { ...node.request, ruleNodeIds: [...(node.request.ruleNodeIds ?? []), source.id] } };
+      if (node.type === "video") {
+        if (source.type === "image") {
+          if (node.request.inputAssetIds.includes(source.assetId)) return node;
+          return { ...node, request: { ...node.request, inputAssetIds: [...node.request.inputAssetIds, source.assetId] } };
+        }
+        if (source.type === "text") {
+          if ((node.request.textNodeIds ?? []).includes(source.id)) return node;
+          return { ...node, request: { ...node.request, textNodeIds: [...(node.request.textNodeIds ?? []), source.id] } };
+        }
+        if ((node.request.upstreamNodeIds ?? []).includes(source.id)) return node;
+        return { ...node, request: { ...node.request, upstreamNodeIds: [...(node.request.upstreamNodeIds ?? []), source.id] } };
       }
-      if (source.type === "text") {
-        if ((node.request.textNodeIds ?? []).includes(source.id)) return node;
-        return { ...node, request: { ...node.request, textNodeIds: [...(node.request.textNodeIds ?? []), source.id] } };
-      }
-      if ((node.request.upstreamNodeIds ?? []).includes(source.id)) return node;
-      return { ...node, request: { ...node.request, upstreamNodeIds: [...(node.request.upstreamNodeIds ?? []), source.id] } };
+      return node;
     }));
-    setSelectedNodeId(targetNodeId);
+    selectSingleNode(targetNodeId);
     setNotice({ tone: "success", message: `已连接“${source.title}”到“${target.title}”` });
   };
 
   const disconnectReference = (targetNodeId: string, assetId: string) => {
-    setNodes((current) => current.map((node) =>
-      node.id === targetNodeId && node.type === "generation"
-        ? {
-            ...node,
-            request: {
-              ...node.request,
-              inputAssetIds: node.request.inputAssetIds.filter((candidate) => candidate !== assetId),
-            },
-          }
-        : node,
-    ));
+    setNodes((current) => current.map((node) => {
+      if (node.id !== targetNodeId) return node;
+      if (node.type === "generation") {
+        return { ...node, request: { ...node.request, inputAssetIds: node.request.inputAssetIds.filter((candidate) => candidate !== assetId) } };
+      }
+      if (node.type === "video") {
+        return { ...node, request: { ...node.request, inputAssetIds: node.request.inputAssetIds.filter((candidate) => candidate !== assetId) } };
+      }
+      return node;
+    }));
   };
 
   const disconnectRule = (targetNodeId: string, ruleNodeId: string) => {
@@ -1201,37 +1446,71 @@ export function TabletWorkbench() {
           },
         };
       }
+      if (node.type === "video") {
+        return {
+          ...node,
+          request: {
+            ...node.request,
+            upstreamNodeIds: (node.request.upstreamNodeIds ?? []).filter((candidate) => candidate !== sourceNodeId),
+            textNodeIds: (node.request.textNodeIds ?? []).filter((candidate) => candidate !== sourceNodeId),
+          },
+        };
+      }
       return node;
     }));
   };
 
-  const removeNode = (nodeId: string) => {
+  const removeNodes = (nodeIds: string[]) => {
+    const ids = new Set(nodeIds);
+    if (!ids.size) return;
     updateNodesState((current) => {
-      const removed = current.find((node) => node.id === nodeId);
+      const removedNodes = current.filter((node) => ids.has(node.id));
       return current
-        .filter((node) => node.id !== nodeId)
+        .filter((node) => !ids.has(node.id))
         .map((node) => {
           if (node.type === "text") {
-            return { ...node, inputNodeIds: node.inputNodeIds.filter((candidate) => candidate !== nodeId) };
+            return { ...node, inputNodeIds: node.inputNodeIds.filter((candidate) => !ids.has(candidate)) };
           }
-          if (node.type !== "generation") return node;
-          if (removed?.type === "image") {
-            return { ...node, request: { ...node.request, inputAssetIds: node.request.inputAssetIds.filter((assetId) => assetId !== removed.assetId) } };
+          const removedImages = removedNodes.filter((removed): removed is CanvasImageNode => removed.type === "image");
+          const removedRules = new Set(removedNodes.filter((removed) => removed.type === "rule").map((removed) => removed.id));
+          if (node.type === "generation") {
+            return {
+              ...node,
+              request: {
+                ...node.request,
+                inputAssetIds: node.request.inputAssetIds.filter((assetId) => !removedImages.some((removed) => removed.assetId === assetId)),
+                ruleNodeIds: (node.request.ruleNodeIds ?? []).filter((ruleNodeId) => !removedRules.has(ruleNodeId)),
+                upstreamNodeIds: (node.request.upstreamNodeIds ?? []).filter((candidate) => !ids.has(candidate)),
+                textNodeIds: (node.request.textNodeIds ?? []).filter((candidate) => !ids.has(candidate)),
+              },
+            };
           }
-          if (removed?.type === "rule") {
-            return { ...node, request: { ...node.request, ruleNodeIds: (node.request.ruleNodeIds ?? []).filter((ruleNodeId) => ruleNodeId !== removed.id) } };
+          if (node.type === "video") {
+            return {
+              ...node,
+              request: {
+                ...node.request,
+                inputAssetIds: node.request.inputAssetIds.filter((assetId) => !removedImages.some((removed) => removed.assetId === assetId)),
+                upstreamNodeIds: (node.request.upstreamNodeIds ?? []).filter((candidate) => !ids.has(candidate)),
+                textNodeIds: (node.request.textNodeIds ?? []).filter((candidate) => !ids.has(candidate)),
+              },
+            };
           }
-          return {
-            ...node,
-            request: {
-              ...node.request,
-              upstreamNodeIds: (node.request.upstreamNodeIds ?? []).filter((candidate) => candidate !== nodeId),
-              textNodeIds: (node.request.textNodeIds ?? []).filter((candidate) => candidate !== nodeId),
-            },
-          };
+          return node;
         });
     });
-    setSelectedNodeId(undefined);
+    selectSingleNode(undefined);
+    setSelectedNodeIds(new Set());
+  };
+
+  const removeNode = (nodeId: string) => removeNodes([nodeId]);
+
+  const groupNodes = (nodeIds: string[]) => {
+    const ids = new Set(nodeIds);
+    if (ids.size < 2) return;
+    const groupId = createId("canvas-group");
+    updateNodesState((current) => current.map((node) => ids.has(node.id) ? { ...node, groupId } : node));
+    setNotice({ tone: "success", message: `已将 ${ids.size} 个节点编组` });
   };
 
   const runWorkflowInstance = async (workflowInstanceId: string) => {
@@ -1263,9 +1542,14 @@ export function TabletWorkbench() {
       void runGenerationNode(selected.id);
       return;
     }
-    const fallback = [...nodesRef.current].reverse().find((node) => node.type === "generation" || node.type === "text");
+    if (selected?.type === "video") {
+      void runVideoNode(selected.id);
+      return;
+    }
+    const fallback = [...nodesRef.current].reverse().find((node) => node.type === "generation" || node.type === "video" || node.type === "text");
     if (fallback?.type === "text") void runTextNode(fallback.id);
     if (fallback?.type === "generation") void runGenerationNode(fallback.id);
+    if (fallback?.type === "video") void runVideoNode(fallback.id);
   };
 
   const arrangeCanvas = () => {
@@ -1291,6 +1575,15 @@ export function TabletWorkbench() {
           zIndex: imageIndex + index + 10,
         };
       }
+      if (node.type === "video") {
+        const index = generationIndex++;
+        return {
+          ...node,
+          x: 930 + (index % 2) * 470,
+          y: 84 + Math.floor(index / 2) * 610,
+          zIndex: imageIndex + index + 20,
+        };
+      }
       const index = generationIndex++;
       return {
         ...node,
@@ -1304,9 +1597,12 @@ export function TabletWorkbench() {
   };
 
   const canRunGeneration = nodes.some((node) => (
-    (node.type === "generation" || node.type === "text") && node.status !== "running"
+    (node.type === "generation" || node.type === "video" || node.type === "text") && node.status !== "running"
   ));
   const activeProject = projects.find((project) => project.id === activeProjectId);
+  const selectedChatContext = buildSelectedChatContext(
+    nodes.find((node) => node.id === selectedNodeId),
+  );
 
   return (
     <main className="tablet-app">
@@ -1344,23 +1640,47 @@ export function TabletWorkbench() {
           assets={assets}
           viewport={viewport}
           selectedNodeId={selectedNodeId}
+          selectedNodeIds={selectedNodeIds}
           optimizingNodeIds={optimizingNodeIds}
           onImportRequest={requestImageImport}
           onGenerateRequest={addGenerationNode}
+          imageModelOptions={imageModelOptions}
+          videoModelOptions={videoModelOptions}
+          defaultImageModel={defaultImageModel}
+          defaultVideoModel={defaultVideoModel}
           onViewportChange={setViewport}
           onNodeMove={(nodeId, point) => {
             setNodes((current) => current.map((node) =>
               node.id === nodeId ? { ...node, ...point } : node,
             ));
           }}
+          onNodesMove={(moves) => {
+            const points = new Map(moves.map((move) => [move.nodeId, move.point]));
+            setNodes((current) => current.map((node) => {
+              const point = points.get(node.id);
+              return point ? { ...node, ...point } : node;
+            }));
+          }}
           onNodeRemove={removeNode}
-          onSelectNode={setSelectedNodeId}
+          onNodesRemove={(nodeIds) => removeNodes(nodeIds)}
+          onSelectNode={(nodeId) => {
+            setSelectedNodeId(nodeId);
+            setSelectedNodeIds(nodeId ? new Set([nodeId]) : new Set());
+          }}
+          onSelectNodes={(nodeIds) => {
+            const next = new Set(nodeIds);
+            setSelectedNodeIds(next);
+            setSelectedNodeId(nodeIds[nodeIds.length - 1]);
+          }}
+          onGroupNodes={groupNodes}
           onGenerationChange={updateGenerationNode}
+          onVideoChange={updateVideoNode}
           onRuleNodeChange={updateRuleNode}
           onTextNodeChange={updateTextNode}
           onRunTextNode={(nodeId) => void runTextNode(nodeId)}
           onOptimizePrompt={(nodeId) => void optimizeGenerationPrompt(nodeId)}
           onRunGeneration={(nodeId) => void runGenerationNode(nodeId)}
+          onRunVideo={(nodeId) => void runVideoNode(nodeId)}
           onGeneratedResultSave={(assetId) => void saveAssetToGallery(assetId)}
           onGeneratedResultRemove={(assetId) => void removeGeneratedAsset(assetId)}
           onConnect={connectNodes}
@@ -1393,12 +1713,17 @@ export function TabletWorkbench() {
         onChange={setResourceSection}
         onOpenChange={setIsResourceDrawerOpen}
         onImport={requestImageImport}
+        onChatOpen={() => {
+          setIsChatOpen(true);
+          setIsResourceDrawerOpen(false);
+        }}
       />
 
       <CanvasToolDock
         canRun={canRunGeneration}
         onImport={requestImageImport}
         onAddGeneration={addGenerationNode}
+        onAddVideo={addVideoNode}
         onAddRules={addRuleNode}
         onAddText={addTextNode}
         onRun={runSelectedGeneration}
@@ -1420,6 +1745,19 @@ export function TabletWorkbench() {
         onRemoveWorkflow={(workflow) => void removeWorkflowTemplate(workflow)}
         onRemoveNodePreset={(preset) => void removeNodePresetTemplate(preset)}
         onImport={(files) => void importCanvasTemplates(files)}
+      />
+
+      <ChatPanel
+        open={isChatOpen}
+        session={serverSession}
+        canvasContext={selectedChatContext}
+        onClose={() => setIsChatOpen(false)}
+        onLoginRequest={() => setIsAccountDialogOpen(true)}
+        onSessionRefresh={() => getServerSession().then((session) => {
+          setServerSession(session);
+          return session;
+        })}
+        onGeneratedImages={saveChatGeneratedImages}
       />
 
       {notice && (
@@ -1452,6 +1790,61 @@ export function TabletWorkbench() {
 function readThemeMode(): ThemeMode {
   const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
   return saved === "light" || saved === "dark" ? saved : "system";
+}
+
+function buildSelectedChatContext(node?: CanvasNode): string | undefined {
+  if (!node) return undefined;
+
+  if (node.type === "image") {
+    return [
+      "当前选中的是画布图片节点。",
+      `标题：${node.title}`,
+    ].join("\n");
+  }
+  if (node.type === "generation") {
+    return [
+      "当前选中的是生图节点。",
+      `标题：${node.title}`,
+      `状态：${node.status}`,
+      `已生成图片：${node.results.length} 张`,
+      `生图提示词：\n${truncateChatContext(node.request.prompt)}`,
+    ].join("\n");
+  }
+  if (node.type === "video") {
+    return [
+      "当前选中的是视频生成节点。",
+      `标题：${node.title}`,
+      `状态：${node.status}`,
+      `已生成视频：${node.results.length} 个`,
+      `视频提示词：\n${truncateChatContext(node.request.prompt)}`,
+    ].join("\n");
+  }
+  if (node.type === "text") {
+    return [
+      "当前选中的是文字 LLM 节点。",
+      `标题：${node.title}`,
+      `状态：${node.status}`,
+      node.systemPrompt.trim()
+        ? `系统指令：\n${truncateChatContext(node.systemPrompt, 3_000)}`
+        : "",
+      node.prompt.trim()
+        ? `用户指令：\n${truncateChatContext(node.prompt, 6_000)}`
+        : "",
+      node.output.trim()
+        ? `节点输出：\n${truncateChatContext(node.output, 8_000)}`
+        : "",
+    ].filter(Boolean).join("\n");
+  }
+  return [
+    "当前选中的是图片规则节点。",
+    `标题：${node.title}`,
+    `规则配置：${truncateChatContext(JSON.stringify(node.rules), 4_000)}`,
+  ].join("\n");
+}
+
+function truncateChatContext(value: string, maxLength = 10_000): string {
+  const content = value.trim();
+  return content.length > maxLength ? `${content.slice(0, maxLength)}…` : content;
 }
 
 function createImageNode(asset: ImageAsset, index: number, point: CanvasPoint): CanvasImageNode {
@@ -1593,17 +1986,20 @@ function removeAssetReferences(nodes: CanvasNode[], assetId: string): CanvasNode
   return nodes
     .filter((node) => node.type !== "image" || node.assetId !== assetId)
     .map((node) => {
-      if (node.type !== "generation") {
-        return node;
+      if (node.type === "generation") {
+        return {
+          ...node,
+          request: { ...node.request, inputAssetIds: node.request.inputAssetIds.filter((candidate) => candidate !== assetId) },
+          results: node.results.filter((result) => result.id !== assetId),
+        };
       }
-      return {
-        ...node,
-        request: {
-          ...node.request,
-          inputAssetIds: node.request.inputAssetIds.filter((candidate) => candidate !== assetId),
-        },
-        results: node.results.filter((result) => result.id !== assetId),
-      };
+      if (node.type === "video") {
+        return {
+          ...node,
+          request: { ...node.request, inputAssetIds: node.request.inputAssetIds.filter((candidate) => candidate !== assetId) },
+        };
+      }
+      return node;
     });
 }
 
@@ -1623,6 +2019,27 @@ function createGenerationNode(
     y: point.y,
     width: 372,
     height: 574,
+    zIndex: index + 1,
+    createdAt: Date.now(),
+  };
+}
+
+function createVideoNode(
+  request: VideoGenerationRequest,
+  index: number,
+  point: CanvasPoint,
+): CanvasVideoNode {
+  return {
+    id: createId("canvas-video"),
+    type: "video",
+    title: "AI 视频生成",
+    request,
+    status: "idle",
+    results: [],
+    x: point.x,
+    y: point.y,
+    width: 420,
+    height: 590,
     zIndex: index + 1,
     createdAt: Date.now(),
   };
@@ -1667,10 +2084,34 @@ function normalizeStoredNode(node: CanvasNode): CanvasNode {
       status: node.status === "running" ? "idle" : node.status,
     };
   }
-  const modelId = isImageModelPresetId(node.request.model.model)
-    ? node.request.model.model
-    : "nano-banana-pro";
+  if (node.type === "video") {
+    return {
+      ...node,
+      width: 420,
+      height: 590,
+      status: node.status === "running" ? "idle" : node.status,
+      request: {
+        ...node.request,
+        model: { provider: "server-gateway", model: node.request.model?.model || MANAGED_VIDEO_MODEL.model },
+        inputAssetIds: node.request.inputAssetIds ?? [],
+        upstreamNodeIds: node.request.upstreamNodeIds ?? [],
+        textNodeIds: node.request.textNodeIds ?? [],
+        count: Math.min(4, Math.max(1, Math.round(node.request.count || 1))),
+      },
+      results: node.results ?? [],
+    };
+  }
+  const rawModelId = node.request.model.model.trim();
+  const modelId = rawModelId || "nano-banana-pro";
+  const isBundledPreset = isImageModelPresetId(modelId);
   const preset = getImageModelPreset(modelId);
+  const resolution = /^(?:1k|2k|4k)$/.test(node.request.resolution)
+    && (!isBundledPreset || preset.resolutions.includes(node.request.resolution))
+    ? node.request.resolution
+    : preset.defaultResolution;
+  const aspectRatio = /^\d{1,5}(?::|x)\d{1,5}$/.test(String(node.request.aspectRatio).replace(/脳/g, "x"))
+    ? node.request.aspectRatio
+    : "16:9";
   return {
     ...node,
     width: 372,
@@ -1680,15 +2121,11 @@ function normalizeStoredNode(node: CanvasNode): CanvasNode {
     status: node.status,
     request: {
       ...node.request,
-      model: { provider: "server-gateway", model: preset.id },
-      resolution: preset.resolutions.includes(node.request.resolution) ? node.request.resolution : preset.defaultResolution,
-      aspectRatio: normalizeImageAspectRatio(
-        preset.id,
-        preset.resolutions.includes(node.request.resolution)
-          ? node.request.resolution
-          : preset.defaultResolution,
-        node.request.aspectRatio,
-      ),
+      model: { provider: "server-gateway", model: modelId },
+      resolution,
+      aspectRatio: isBundledPreset
+        ? normalizeImageAspectRatio(preset.id, resolution, aspectRatio)
+        : aspectRatio as ImageGenerationRequest["aspectRatio"],
       ruleNodeIds: node.request.ruleNodeIds ?? [],
       upstreamNodeIds: node.request.upstreamNodeIds ?? [],
       textNodeIds: node.request.textNodeIds ?? [],
@@ -1720,6 +2157,43 @@ function getViewportCenter(viewport: CanvasViewport): CanvasPoint {
     x: (window.innerWidth / 2 - viewport.x) / viewport.scale,
     y: ((window.innerHeight - 52) / 2 - viewport.y) / viewport.scale,
   };
+}
+
+function findAvailableNodePoint(
+  nodes: CanvasNode[],
+  center: CanvasPoint,
+  width: number,
+  height: number,
+): CanvasPoint {
+  const origin = { x: center.x - width / 2, y: center.y - height / 2 };
+  const candidates: CanvasPoint[] = [origin];
+  for (let ring = 1; ring <= 12; ring += 1) {
+    const offset = ring * 72;
+    candidates.push(
+      { x: origin.x + offset, y: origin.y },
+      { x: origin.x - offset, y: origin.y },
+      { x: origin.x, y: origin.y + offset },
+      { x: origin.x, y: origin.y - offset },
+      { x: origin.x + offset, y: origin.y + offset },
+      { x: origin.x - offset, y: origin.y - offset },
+    );
+  }
+  return candidates.find((candidate) => !nodes.some((node) => rectanglesOverlap(
+    { x: candidate.x, y: candidate.y, width, height },
+    { x: node.x, y: node.y, width: node.width, height: node.height },
+    28,
+  ))) ?? origin;
+}
+
+function rectanglesOverlap(
+  left: { x: number; y: number; width: number; height: number },
+  right: { x: number; y: number; width: number; height: number },
+  padding: number,
+): boolean {
+  return left.x < right.x + right.width + padding
+    && left.x + left.width + padding > right.x
+    && left.y < right.y + right.height + padding
+    && left.y + left.height + padding > right.y;
 }
 
 function generationPixelSize(aspectRatio: ImageGenerationRequest["aspectRatio"]) {

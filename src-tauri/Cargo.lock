@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "inspiration-drawer-tablet"
-version = "0.1.7"
+version = "0.1.15"
 dependencies = [
  "base64 0.22.1",
  "reqwest 0.12.28",

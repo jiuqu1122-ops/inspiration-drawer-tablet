@@ -29,7 +29,7 @@ class TabletGenerationKeepAliveService : Service() {
     val notification = NotificationCompat.Builder(this, CHANNEL_ID)
       .setSmallIcon(R.mipmap.ic_launcher)
       .setContentTitle("灵感画布")
-      .setContentText("正在后台生成图片")
+      .setContentText("正在后台处理生成或更新任务")
       .setContentIntent(pendingIntent)
       .setOngoing(true)
       .setCategory(Notification.CATEGORY_PROGRESS)
@@ -45,10 +45,13 @@ class TabletGenerationKeepAliveService : Service() {
     val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
     wakeLock = powerManager.newWakeLock(
       PowerManager.PARTIAL_WAKE_LOCK,
-      "InspirationDrawer:ImageGeneration",
+      "InspirationDrawer:BackgroundTask",
     ).apply {
       setReferenceCounted(false)
-      acquire(15 * 60 * 1000L)
+      // Keep the process alive for long-running server tasks while the app is
+      // backgrounded. The foreground service is stopped by JS when all tasks
+      // finish; this timeout is only a final battery-safety guard.
+      acquire(30 * 60 * 1000L)
     }
     } catch (_: SecurityException) {
       // Some device policies reject wake locks or foreground-service startup.
@@ -62,7 +65,9 @@ class TabletGenerationKeepAliveService : Service() {
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    return START_NOT_STICKY
+    // If Android reclaims the service process, restart the foreground service
+    // so the persisted canvas task can be recovered when the app resumes.
+    return START_STICKY
   }
 
   override fun onDestroy() {
@@ -77,7 +82,7 @@ class TabletGenerationKeepAliveService : Service() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
     val manager = getSystemService(NotificationManager::class.java)
     manager.createNotificationChannel(
-      NotificationChannel(CHANNEL_ID, "后台图片生成", NotificationManager.IMPORTANCE_LOW),
+      NotificationChannel(CHANNEL_ID, "后台任务", NotificationManager.IMPORTANCE_LOW),
     )
   }
 

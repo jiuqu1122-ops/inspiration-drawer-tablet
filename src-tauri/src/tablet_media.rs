@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
 #[cfg(target_os = "android")]
 use tauri::Runtime;
+use tauri::{AppHandle, Manager};
 
 #[allow(dead_code)]
 #[derive(Clone, Deserialize)]
@@ -28,10 +28,8 @@ pub struct AndroidMediaPlugin<R: Runtime> {
 pub fn init_android_media<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("tablet-media")
         .setup(|app, api| {
-            let handle = api.register_android_plugin(
-                "com.inspirationdrawer.tablet",
-                "TabletMediaPlugin",
-            )?;
+            let handle =
+                api.register_android_plugin("com.inspirationdrawer.tablet", "TabletMediaPlugin")?;
             app.manage(AndroidMediaPlugin { handle });
             Ok(())
         })

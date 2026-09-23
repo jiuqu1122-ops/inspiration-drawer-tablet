@@ -1,6 +1,6 @@
 [package]
 name = "inspiration-drawer-tablet"
-version = "0.1.7"
+version = "0.1.15"
 description = "Touch-first AI industrial design workbench for Android phones and tablets"
 authors = ["Inspiration Drawer"]
 edition = "2021"

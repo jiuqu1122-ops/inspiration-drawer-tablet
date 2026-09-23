@@ -12,9 +12,9 @@ use tauri::Manager;
 use tokio::time::sleep;
 use uuid::Uuid;
 
-mod tablet_update;
-mod tablet_media;
 mod tablet_keep_alive;
+mod tablet_media;
+mod tablet_update;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_SERVER_URL: &str = "https://api.unmind.art";
@@ -64,6 +64,7 @@ struct VerifyEmailCodeInput {
     challenge_id: String,
     code: String,
     display_name: Option<String>,
+    invite_code: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -103,6 +104,20 @@ struct GenerateServerImagesInput {
     references: Vec<ServerImageReference>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateServerVideosInput {
+    request_id: String,
+    model: String,
+    prompt: String,
+    aspect_ratio: Option<String>,
+    resolution: Option<String>,
+    duration: Option<u32>,
+    input_mode: Option<String>,
+    count: u8,
+    references: Vec<ServerImageReference>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RecoverServerImagesInput {
@@ -129,10 +144,45 @@ struct GenerateServerTextInput {
     context: Vec<String>,
 }
 
+#[derive(Clone, Default, Deserialize, Serialize)]
+struct ServerChatMessage {
+    role: String,
+    #[serde(default)]
+    content: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteServerChatInput {
+    request_id: String,
+    messages: Vec<ServerChatMessage>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    tools: Vec<Value>,
+    #[serde(default)]
+    tool_choice: Option<Value>,
+    #[serde(default)]
+    usage_context: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeGeneratedImage {
     data_uri: String,
+    mime_type: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeGeneratedVideo {
+    uri: String,
     mime_type: String,
 }
 
@@ -146,6 +196,60 @@ struct NativePromptOptimization {
 #[serde(rename_all = "camelCase")]
 struct NativeGeneratedText {
     text: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeChatCompletion {
+    text: String,
+    #[serde(default)]
+    tool_calls: Vec<NativeChatToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    usage: Option<Value>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeChatToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeWebSearchResult {
+    query: String,
+    provider: String,
+    results: Vec<NativeWebSearchItem>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeWebSearchItem {
+    title: String,
+    url: String,
+    snippet: String,
+    published_at: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeChatModels {
+    models: Vec<String>,
+    default_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    catalog: Vec<NativeImageModel>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeImageModel {
+    id: String,
+    display_name: Option<String>,
+    modality: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    capabilities: Option<Value>,
 }
 
 #[tauri::command]
@@ -201,6 +305,17 @@ async fn verify_server_email_code(
         .filter(|value| !value.is_empty())
     {
         body["displayName"] = Value::String(display_name.to_string());
+    }
+    if let Some(invite_code) = input
+        .invite_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if invite_code.len() < 6 || invite_code.len() > 32 {
+            return Err("邀请码长度应为 6 到 32 位".to_string());
+        }
+        body["inviteCode"] = Value::String(invite_code.to_ascii_uppercase());
     }
     let (status, payload) =
         public_json_request(&client, Method::POST, "v1/auth/email/verify", Some(body)).await?;
@@ -323,6 +438,70 @@ async fn generate_server_images(
 }
 
 #[tauri::command]
+async fn generate_server_videos(
+    app: tauri::AppHandle,
+    input: GenerateServerVideosInput,
+) -> Result<Vec<NativeGeneratedVideo>, String> {
+    validate_video_generation_input(&input)?;
+    let client = create_http_client()?;
+    let mut share_ids = Vec::new();
+    let mut input_images = Vec::new();
+    for reference in &input.references {
+        match upload_reference(&app, &client, reference).await {
+            Ok((share_id, url)) => {
+                share_ids.push(share_id);
+                input_images.push(url);
+            }
+            Err(error) => {
+                cleanup_reference_shares(&app, &client, &share_ids).await;
+                return Err(error);
+            }
+        }
+    }
+    let body = json!({
+        "clientRequestId": input.request_id,
+        "model": input.model,
+        "prompt": input.prompt,
+        "inputImages": input_images,
+        "aspectRatio": input.aspect_ratio,
+        "resolution": input.resolution,
+        "duration": input.duration,
+        "inputMode": input.input_mode.unwrap_or_else(|| "REF".to_string()),
+        "count": input.count,
+    });
+    let result =
+        authenticated_json_request(&app, &client, Method::POST, "v1/ai/videos", Some(body)).await;
+    cleanup_reference_shares(&app, &client, &share_ids).await;
+    let (status, payload) = result?;
+    ensure_success(status, &payload, "瑙嗛鐢熸垚浠诲姟鍒涘缓澶辫触")?;
+    let mut sources = collect_video_sources(&payload);
+    let task_ids = collect_video_task_ids(&payload);
+    for task_id in task_ids {
+        if sources.len() >= input.count as usize {
+            break;
+        }
+        let task = poll_video_task(&app, &client, &task_id, &input.request_id).await?;
+        sources.extend(collect_video_sources(&task));
+    }
+    sources.dedup();
+    if sources.is_empty() {
+        return Err("Server did not return a generated video".to_string());
+    }
+    Ok(sources
+        .into_iter()
+        .take(input.count as usize)
+        .map(|uri| NativeGeneratedVideo {
+            mime_type: if uri.to_ascii_lowercase().contains("webm") {
+                "video/webm".to_string()
+            } else {
+                "video/mp4".to_string()
+            },
+            uri,
+        })
+        .collect())
+}
+
+#[tauri::command]
 async fn recover_server_images(
     app: tauri::AppHandle,
     input: RecoverServerImagesInput,
@@ -437,6 +616,364 @@ async fn generate_server_text(
     let text = extract_completion_content(&result)
         .ok_or_else(|| "文字 LLM 节点没有返回有效内容".to_string())?;
     Ok(NativeGeneratedText { text })
+}
+
+#[tauri::command]
+async fn complete_server_chat(
+    app: tauri::AppHandle,
+    input: CompleteServerChatInput,
+) -> Result<NativeChatCompletion, String> {
+    validate_chat_input(&input)?;
+    let client = create_http_client()?;
+    let mut body = json!({
+        "clientRequestId": input.request_id,
+        "messages": input.messages,
+    });
+    if let Some(model) = input
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body["model"] = json!(model);
+    }
+    if !input.tools.is_empty() {
+        body["tools"] = json!(input.tools);
+    }
+    if let Some(tool_choice) = input.tool_choice {
+        body["toolChoice"] = tool_choice;
+    }
+    if let Some(usage_context) = input
+        .usage_context
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body["usageContext"] = json!(usage_context);
+    }
+    let (status, payload) = authenticated_json_request(
+        &app,
+        &client,
+        Method::POST,
+        "v1/ai/chat/completions",
+        Some(body),
+    )
+    .await?;
+    ensure_success(status, &payload, "Chat 任务创建失败")?;
+    let task_id = required_string(&payload, "/taskId", "服务端没有返回 Chat 任务")?;
+    let result = poll_agent_task(&app, &client, &task_id).await?;
+    let text = extract_completion_content(&result).unwrap_or_default();
+    let tool_calls = extract_completion_tool_calls(&result);
+    let text = text.trim().to_string();
+    if text.is_empty() && tool_calls.is_empty() {
+        return Err("Chat 没有返回有效内容".to_string());
+    }
+    return Ok(NativeChatCompletion {
+        text,
+        tool_calls,
+        usage: result.pointer("/usage").cloned(),
+    });
+}
+
+#[tauri::command]
+async fn list_server_chat_models(app: tauri::AppHandle) -> Result<NativeChatModels, String> {
+    let client = create_http_client()?;
+    let (status, payload) =
+        authenticated_json_request(&app, &client, Method::GET, "v1/ai/models", None).await?;
+    ensure_success(status, &payload, "Chat 模型列表获取失败")?;
+    let models = payload
+        .pointer("/models")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let default_model = payload
+        .pointer("/defaultModel")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok(NativeChatModels {
+        models,
+        default_model,
+        catalog: Vec::new(),
+    })
+}
+
+#[tauri::command]
+async fn list_server_image_models(app: tauri::AppHandle) -> Result<NativeChatModels, String> {
+    let client = create_http_client()?;
+    let (status, payload) =
+        authenticated_json_request(&app, &client, Method::GET, "v1/ai/images/models", None).await?;
+    ensure_success(status, &payload, "生图模型列表获取失败")?;
+    let mut models: Vec<String> = payload
+        .pointer("/models")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut catalog = payload
+        .pointer("/catalog")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                // This endpoint is image-only. Accept an omitted modality for
+                // transitional servers, while still excluding explicit chat/video entries.
+                .filter(|value| {
+                    value
+                        .pointer("/modality")
+                        .and_then(Value::as_str)
+                        .map(|modality| modality.eq_ignore_ascii_case("image"))
+                        .unwrap_or(true)
+                })
+                .filter_map(|value| {
+                    let id = value.pointer("/id").and_then(Value::as_str)?.trim();
+                    if id.is_empty() {
+                        return None;
+                    }
+                    Some(NativeImageModel {
+                        id: id.to_string(),
+                        display_name: value
+                            .pointer("/displayName")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        modality: Some("image".to_string()),
+                        capabilities: value.pointer("/capabilities").cloned(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let has_explicit_catalog = !catalog.is_empty();
+
+    // Older transitional responses expose the same public promises in a
+    // top-level capabilities map instead of an explicit catalog. Rehydrate
+    // those entries so the mobile UI never falls back to a bundled preset.
+    let capability_map = payload.pointer("/capabilities").and_then(Value::as_object);
+    if let Some(values) = capability_map {
+        for (id, capabilities) in values {
+            let clean_id = id.trim();
+            if clean_id.is_empty() {
+                continue;
+            }
+            if !models.iter().any(|value| value == clean_id) {
+                models.push(clean_id.to_string());
+            }
+            if !catalog.iter().any(|model| model.id == clean_id) {
+                catalog.push(NativeImageModel {
+                    id: clean_id.to_string(),
+                    display_name: Some(clean_id.to_string()),
+                    modality: Some("image".to_string()),
+                    capabilities: Some(capabilities.clone()),
+                });
+            }
+        }
+    }
+    for model in &catalog {
+        if !models.iter().any(|value| value == &model.id) {
+            models.push(model.id.clone());
+        }
+    }
+    let model_ids = models.clone();
+    for model_id in model_ids {
+        if catalog.iter().any(|model| model.id == model_id) {
+            continue;
+        }
+        catalog.push(NativeImageModel {
+            display_name: Some(model_id.clone()),
+            capabilities: capability_map.and_then(|values| values.get(&model_id).cloned()),
+            id: model_id,
+            modality: Some("image".to_string()),
+        });
+    }
+    if has_explicit_catalog {
+        // When the server provides a canonical catalog, it is authoritative.
+        // Do not surface legacy aliases from the transitional `models` list as
+        // separate selectable SKUs.
+        models = catalog
+            .iter()
+            .map(|model| model.id.clone())
+            .collect::<Vec<_>>();
+    }
+    let default_model = payload
+        .pointer("/defaultImageModel")
+        .or_else(|| payload.pointer("/defaultModel"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok(NativeChatModels {
+        models,
+        default_model,
+        catalog,
+    })
+}
+
+#[tauri::command]
+async fn list_server_video_models(app: tauri::AppHandle) -> Result<NativeChatModels, String> {
+    let client = create_http_client()?;
+    let (status, payload) =
+        authenticated_json_request(&app, &client, Method::GET, "v1/ai/catalog", None).await?;
+    ensure_success(status, &payload, "瑙嗛妯″瀷鍒楄〃鑾峰彇澶辫触")?;
+    let mut catalog = Vec::new();
+    if let Some(values) = payload.pointer("/catalog").and_then(Value::as_array) {
+        for value in values {
+            if value
+                .pointer("/modality")
+                .and_then(Value::as_str)
+                .map(|item| !item.eq_ignore_ascii_case("video"))
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            let Some(id) = value
+                .pointer("/id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+            else {
+                continue;
+            };
+            catalog.push(NativeImageModel {
+                id: id.to_string(),
+                display_name: value
+                    .pointer("/displayName")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                modality: Some("video".to_string()),
+                capabilities: value.pointer("/capabilities").cloned(),
+            });
+        }
+    }
+    if catalog.is_empty() {
+        if let Some(channels) = payload.pointer("/videoChannels").and_then(Value::as_array) {
+            for channel in channels {
+                let channel_caps = channel
+                    .pointer("/modelCapabilities")
+                    .and_then(Value::as_object);
+                if let Some(models) = channel.pointer("/models").and_then(Value::as_array) {
+                    for model in models
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                    {
+                        catalog.push(NativeImageModel {
+                            id: model.to_string(),
+                            display_name: Some(model.to_string()),
+                            modality: Some("video".to_string()),
+                            capabilities: channel_caps.and_then(|caps| caps.get(model).cloned()),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let models = catalog.iter().map(|model| model.id.clone()).collect();
+    let default_model = payload
+        .pointer("/defaultVideoModel")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok(NativeChatModels {
+        models,
+        default_model,
+        catalog,
+    })
+}
+
+#[tauri::command]
+async fn chat_web_search(
+    _app: tauri::AppHandle,
+    query: String,
+    limit: Option<usize>,
+) -> Result<NativeWebSearchResult, String> {
+    let query = query.trim().to_string();
+    if query.is_empty() || query.chars().count() > 500 {
+        return Err("联网搜索词不能为空或超过 500 个字符".to_string());
+    }
+    let result_limit = limit.unwrap_or(6).clamp(1, 8);
+    let client = create_http_client()?;
+    let response = client
+        .get("https://www.bing.com/search")
+        .query(&[
+            ("format", "rss"),
+            ("q", query.as_str()),
+            ("setlang", "zh-hans"),
+            ("cc", "CN"),
+        ])
+        .header("accept", "application/rss+xml, application/xml, text/xml")
+        .header("accept-language", "zh-CN,zh;q=0.9,en;q=0.8")
+        .send()
+        .await
+        .map_err(|error| format!("联网搜索失败：{error}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("读取联网搜索结果失败：{error}"))?;
+    if !status.is_success() {
+        return Err(format!("联网搜索服务返回 HTTP {}", status.as_u16()));
+    }
+    let results = parse_bing_rss_results(&body, result_limit);
+    if results.is_empty() {
+        return Err("联网搜索没有返回可用结果，请更换关键词重试".to_string());
+    }
+    Ok(NativeWebSearchResult {
+        query,
+        provider: "Bing RSS".to_string(),
+        results,
+    })
+}
+
+fn parse_bing_rss_results(body: &str, limit: usize) -> Vec<NativeWebSearchItem> {
+    body.split("<item>")
+        .skip(1)
+        .filter_map(|item| {
+            let title = xml_tag_text(item, "title")?;
+            let url = xml_tag_text(item, "link")?;
+            if !matches!(url.split(':').next(), Some("http" | "https")) {
+                return None;
+            }
+            Some(NativeWebSearchItem {
+                title,
+                url,
+                snippet: xml_tag_text(item, "description").unwrap_or_default(),
+                published_at: xml_tag_text(item, "pubDate"),
+            })
+        })
+        .take(limit)
+        .collect()
+}
+
+fn xml_tag_text(source: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = source.find(&open)? + open.len();
+    let end = source[start..].find(&close)? + start;
+    let value = source[start..end]
+        .trim()
+        .trim_start_matches("<![CDATA[")
+        .trim_end_matches("]]>")
+        .trim();
+    let decoded = decode_html_entities(value);
+    (!decoded.is_empty()).then_some(decoded)
+}
+
+fn decode_html_entities(value: &str) -> String {
+    value
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
 }
 
 async fn upload_reference(
@@ -901,11 +1438,14 @@ fn validate_generation_input(input: &GenerateServerImagesInput) -> Result<(), St
     if input.prompt.trim().is_empty() {
         return Err("请输入生图描述".to_string());
     }
-    if !matches!(
-        input.model.as_str(),
-        "nano-banana-pro" | "nano-banana-2" | "gpt-image-2"
-    ) {
-        return Err("服务端不接受该公开模型".to_string());
+    let model = input.model.trim();
+    if model.is_empty()
+        || model.len() > 200
+        || !model.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':' | '/')
+        })
+    {
+        return Err("图片模型标识无效".to_string());
     }
     if !is_valid_aspect_ratio(&input.model, &input.resolution, &input.aspect_ratio) {
         return Err("请选择有效的图片比例".to_string());
@@ -930,27 +1470,217 @@ fn validate_generation_input(input: &GenerateServerImagesInput) -> Result<(), St
     Ok(())
 }
 
-fn is_valid_aspect_ratio(model: &str, resolution: &str, value: &str) -> bool {
+fn validate_video_generation_input(input: &GenerateServerVideosInput) -> Result<(), String> {
+    if input.request_id.trim().len() < 8 || input.prompt.trim().is_empty() {
+        return Err("瑙嗛鐢熸垚璇锋眰鏃犳晥".to_string());
+    }
+    if input.model.trim().is_empty()
+        || input.model.len() > 200
+        || !input.model.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':' | '/')
+        })
+    {
+        return Err("瑙嗛妯″瀷鏍囪瘑鏃犳晥".to_string());
+    }
+    if !(1..=4).contains(&input.count) {
+        return Err("瑙嗛鍗曟鐢熸垚寮犳暟蹇呴』涓?1 鍒?4".to_string());
+    }
+    if input.references.len() > 9
+        || input
+            .references
+            .iter()
+            .any(|reference| !reference.data_uri.starts_with("data:image/"))
+    {
+        return Err("瑙嗛鍙傝€冨浘鏍煎紡鏃犳晥".to_string());
+    }
+    Ok(())
+}
+
+fn collect_video_sources(value: &Value) -> Vec<String> {
+    let mut output = Vec::new();
+    collect_video_sources_inner(value, &mut output, 0, false);
+    output
+}
+
+fn collect_video_sources_inner(
+    value: &Value,
+    output: &mut Vec<String>,
+    depth: usize,
+    trusted: bool,
+) {
+    if depth > 10 {
+        return;
+    }
+    match value {
+        Value::String(text) => {
+            if text.starts_with("data:video/")
+                || (trusted && (text.starts_with("https://") || text.starts_with("http://")))
+            {
+                output.push(
+                    text.trim_matches(|character: char| " \"'\\n\\r,]})".contains(character))
+                        .to_string(),
+                );
+            }
+        }
+        Value::Array(values) => values
+            .iter()
+            .for_each(|item| collect_video_sources_inner(item, output, depth + 1, trusted)),
+        Value::Object(values) => {
+            for (key, item) in values {
+                let is_result = matches!(
+                    key.as_str(),
+                    "video_url"
+                        | "videoUrl"
+                        | "url"
+                        | "urls"
+                        | "uri"
+                        | "uris"
+                        | "result"
+                        | "results"
+                        | "output"
+                        | "outputs"
+                        | "walletVideoResults"
+                );
+                collect_video_sources_inner(item, output, depth + 1, trusted || is_result);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_video_task_ids(value: &Value) -> Vec<String> {
+    let mut output = Vec::new();
+    if let Some(results) = value.pointer("/results").and_then(Value::as_array) {
+        for result in results {
+            if let Some(task_id) = result
+                .pointer("/taskId")
+                .and_then(Value::as_str)
+                .or_else(|| result.pointer("/id").and_then(Value::as_str))
+            {
+                output.push(task_id.to_string());
+            }
+        }
+    }
+    if let Some(task_id) = value.pointer("/taskId").and_then(Value::as_str) {
+        output.push(task_id.to_string());
+    }
+    output
+}
+
+async fn poll_video_task(
+    app: &tauri::AppHandle,
+    client: &Client,
+    task_id: &str,
+    request_id: &str,
+) -> Result<Value, String> {
+    for _ in 0..180 {
+        let path = format!("v1/ai/videos/{task_id}?clientRequestId={request_id}");
+        let (status, payload) =
+            authenticated_json_request(app, client, Method::GET, &path, None).await?;
+        ensure_success(status, &payload, "瑙嗛浠诲姟鏌ヨ澶辫触")?;
+        let state = payload
+            .pointer("/status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if matches!(
+            state.as_str(),
+            "completed" | "succeeded" | "success" | "failed" | "cancelled"
+        ) {
+            if matches!(state.as_str(), "failed" | "cancelled") {
+                return Err(server_error_message(&payload, 502, "瑙嗛浠诲姟鎵ц澶辫触"));
+            }
+            return Ok(payload);
+        }
+        let delay = payload
+            .pointer("/pollAfterMs")
+            .and_then(Value::as_u64)
+            .unwrap_or(2500)
+            .clamp(1000, 15000);
+        sleep(Duration::from_millis(delay)).await;
+    }
+    Err("VIDEO_RECOVERY_PENDING: 瑙嗛浠诲姟浠嶅湪鍚庡彴澶勭悊".to_string())
+}
+
+fn validate_chat_input(input: &CompleteServerChatInput) -> Result<(), String> {
+    if input.request_id.trim().len() < 8 || input.request_id.len() > 128 {
+        return Err("Chat 请求 ID 无效".to_string());
+    }
+    if input.messages.is_empty() || input.messages.len() > 48 {
+        return Err("Chat 消息数量无效".to_string());
+    }
+
+    let mut total_bytes = 0_usize;
+    for message in &input.messages {
+        if !matches!(
+            message.role.as_str(),
+            "system" | "user" | "assistant" | "tool"
+        ) {
+            return Err("Chat 消息角色无效".to_string());
+        }
+        let content_bytes = match &message.content {
+            Value::String(content) => content.trim().len(),
+            Value::Null => 0,
+            content => content.to_string().len(),
+        };
+        let has_tool_calls = message
+            .tool_calls
+            .as_ref()
+            .is_some_and(|calls| !calls.is_empty() && calls.len() <= 16);
+        let has_tool_call_id = message
+            .tool_call_id
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty() && value.len() <= 256);
+        let valid_shape = match message.role.as_str() {
+            "system" | "user" => content_bytes > 0,
+            "assistant" => content_bytes > 0 || has_tool_calls,
+            "tool" => content_bytes > 0 && has_tool_call_id,
+            _ => false,
+        };
+        if !valid_shape || content_bytes > 50_000 {
+            return Err("Chat 消息内容无效".to_string());
+        }
+        if message.role != "assistant" && message.tool_calls.is_some() {
+            return Err("Chat 工具调用消息无效".to_string());
+        }
+        if message.role != "tool" && message.tool_call_id.is_some() {
+            return Err("Chat 工具结果消息无效".to_string());
+        }
+        total_bytes = total_bytes.saturating_add(content_bytes);
+        if total_bytes > 180_000 {
+            return Err("Chat 对话内容过长，请新建一个对话".to_string());
+        }
+    }
+
+    if input
+        .messages
+        .last()
+        .map(|message| !matches!(message.role.as_str(), "user" | "tool"))
+        .unwrap_or(true)
+    {
+        return Err("Chat 最后一条消息必须来自用户或工具".to_string());
+    }
+    Ok(())
+}
+
+fn is_valid_aspect_ratio(_model: &str, _resolution: &str, value: &str) -> bool {
     if matches!(value, "1:1" | "3:4" | "4:3" | "9:16" | "16:9") {
         return true;
     }
-    if model != "gpt-image-2" {
+    // Exact dimensions are part of the public server catalog. Validate the
+    // shape and bounds here, but do not hard-code model IDs: canonical IDs can
+    // change while the server continues to advertise the same capability.
+    let Some((raw_width, raw_height)) = value.split_once('x') else {
         return false;
-    }
-    let allowed: &[&str] = match resolution.to_ascii_lowercase().as_str() {
-        "2k" => &[
-            "2048x2048", "2048x1152", "1152x2048", "2064x1376", "1376x2064",
-            "2048x1536", "1536x2048", "2016x864", "864x2016", "2080x1664",
-            "1664x2080", "2048x1024", "2064x688",
-        ],
-        "4k" => &[
-            "2880x2880", "3840x2160", "2160x3840", "3520x2352", "2352x3520",
-            "3312x2480", "2480x3312", "3840x1648", "1648x3840", "3216x2576",
-            "2576x3216", "3840x1920", "3840x1280", "1280x3840",
-        ],
-        _ => return false,
     };
-    allowed.contains(&value)
+    let Ok(width) = raw_width.parse::<u32>() else {
+        return false;
+    };
+    let Ok(height) = raw_height.parse::<u32>() else {
+        return false;
+    };
+    (64..=8_192).contains(&width) && (64..=8_192).contains(&height)
 }
 
 fn normalize_reference_mime(input: &str) -> Result<&'static str, String> {
@@ -1025,6 +1755,48 @@ fn extract_completion_content(payload: &Value) -> Option<String> {
             .collect::<Vec<_>>()
             .join("\n"),
     )
+}
+
+fn extract_completion_tool_calls(payload: &Value) -> Vec<NativeChatToolCall> {
+    payload
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(Value::as_array)
+        .map(|calls| {
+            calls
+                .iter()
+                .filter_map(|call| {
+                    let id = call
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim();
+                    let function = call.get("function")?;
+                    let name = function
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim();
+                    if name.is_empty() {
+                        return None;
+                    }
+                    let arguments = match function.get("arguments") {
+                        Some(Value::String(value)) => value.clone(),
+                        Some(value) => value.to_string(),
+                        None => "{}".to_string(),
+                    };
+                    Some(NativeChatToolCall {
+                        id: if id.is_empty() {
+                            Uuid::new_v4().to_string()
+                        } else {
+                            id.to_string()
+                        },
+                        name: name.to_string(),
+                        arguments,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn non_empty_string(input: &str) -> Option<String> {
@@ -1134,13 +1906,20 @@ pub fn run() {
             logout_server_session,
             redeem_server_credit_code,
             generate_server_images,
+            generate_server_videos,
             recover_server_images,
             tablet_media::save_image_to_gallery,
             tablet_media::share_image,
             tablet_keep_alive::set_generation_keep_alive,
             optimize_server_prompt,
             generate_server_text,
+            complete_server_chat,
+            list_server_chat_models,
+            list_server_image_models,
+            list_server_video_models,
+            chat_web_search,
             tablet_update::check_tablet_update,
+            tablet_update::prepare_tablet_update,
             tablet_update::install_tablet_update,
         ])
         .run(tauri::generate_context!())
@@ -1197,6 +1976,108 @@ mod tests {
         assert_eq!(
             extract_completion_content(&payload).as_deref(),
             Some("优化后的提示词")
+        );
+    }
+
+    #[test]
+    fn accepts_valid_chat_input() {
+        let input = CompleteServerChatInput {
+            request_id: "tablet-chat-request".to_string(),
+            messages: vec![
+                ServerChatMessage {
+                    role: "system".to_string(),
+                    content: Value::String("You are helpful.".to_string()),
+                    ..Default::default()
+                },
+                ServerChatMessage {
+                    role: "user".to_string(),
+                    content: Value::String("帮我整理这个设计方向".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(validate_chat_input(&input).is_ok());
+    }
+
+    #[test]
+    fn rejects_chat_input_without_a_final_user_message() {
+        let input = CompleteServerChatInput {
+            request_id: "tablet-chat-request".to_string(),
+            messages: vec![ServerChatMessage {
+                role: "assistant".to_string(),
+                content: Value::String("上一条回复".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_chat_input(&input).unwrap_err(),
+            "Chat 最后一条消息必须来自用户或工具"
+        );
+    }
+
+    #[test]
+    fn accepts_chat_tool_continuation_messages() {
+        let input = CompleteServerChatInput {
+            request_id: "tablet-chat-tool-request".to_string(),
+            messages: vec![
+                ServerChatMessage {
+                    role: "user".to_string(),
+                    content: Value::String("生成一张产品图".to_string()),
+                    ..Default::default()
+                },
+                ServerChatMessage {
+                    role: "assistant".to_string(),
+                    content: Value::Null,
+                    tool_calls: Some(vec![json!({
+                        "id": "call-1",
+                        "type": "function",
+                        "function": { "name": "generate_image", "arguments": "{}" }
+                    })]),
+                    ..Default::default()
+                },
+                ServerChatMessage {
+                    role: "tool".to_string(),
+                    content: json!({ "success": true, "imageCount": 1 }),
+                    tool_call_id: Some("call-1".to_string()),
+                    name: Some("generate_image".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(validate_chat_input(&input).is_ok());
+    }
+
+    #[test]
+    fn accepts_dynamic_server_image_model_ids() {
+        let input = GenerateServerImagesInput {
+            request_id: "tablet-image-dynamic-model".to_string(),
+            model: "gpt-image-2.5-high".to_string(),
+            prompt: "a clean industrial design sketch".to_string(),
+            aspect_ratio: "16:9".to_string(),
+            resolution: "2k".to_string(),
+            count: 1,
+            references: Vec::new(),
+        };
+        assert!(validate_generation_input(&input).is_ok());
+    }
+
+    #[test]
+    fn rejects_unsafe_server_image_model_ids() {
+        let input = GenerateServerImagesInput {
+            request_id: "tablet-image-unsafe-model".to_string(),
+            model: "gpt image 2".to_string(),
+            prompt: "a clean industrial design sketch".to_string(),
+            aspect_ratio: "16:9".to_string(),
+            resolution: "2k".to_string(),
+            count: 1,
+            references: Vec::new(),
+        };
+        assert_eq!(
+            validate_generation_input(&input).unwrap_err(),
+            "图片模型标识无效"
         );
     }
 }

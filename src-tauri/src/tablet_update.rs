@@ -2,7 +2,10 @@ use reqwest::{Client, StatusCode, Url};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     fs,
@@ -72,6 +75,14 @@ pub struct TabletUpdateInstallResult {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TabletUpdatePrepareResult {
+    version: String,
+    cached: bool,
+    size: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct TabletUpdateProgress {
     stage: &'static str,
     version: String,
@@ -116,6 +127,44 @@ pub async fn check_tablet_update() -> Result<TabletUpdateInfo, String> {
 }
 
 #[tauri::command]
+pub async fn prepare_tablet_update(app: AppHandle) -> Result<TabletUpdatePrepareResult, String> {
+    let (manifest, _) = fetch_update_manifest().await?;
+    ensure_newer_update(&manifest)?;
+    let manifest_version = manifest.version.trim_start_matches('v');
+    let apk_path = update_apk_path(&app, manifest_version).await?;
+    let cached = verify_apk_file(&apk_path, &manifest.apk)
+        .await
+        .unwrap_or(false);
+    if cached {
+        emit_progress(
+            &app,
+            "verified",
+            manifest_version,
+            manifest.apk.size,
+            manifest.apk.size,
+        );
+    } else {
+        let _ = crate::tablet_keep_alive::set_generation_keep_alive(
+            app.clone(),
+            crate::tablet_keep_alive::KeepAliveInput { active: true },
+        )
+        .await;
+        let download_result = download_apk(&app, &manifest, &apk_path).await;
+        let _ = crate::tablet_keep_alive::set_generation_keep_alive(
+            app.clone(),
+            crate::tablet_keep_alive::KeepAliveInput { active: false },
+        )
+        .await;
+        download_result?;
+    }
+    Ok(TabletUpdatePrepareResult {
+        version: manifest_version.to_string(),
+        cached,
+        size: manifest.apk.size,
+    })
+}
+
+#[tauri::command]
 pub async fn install_tablet_update(
     app: AppHandle,
     version: String,
@@ -126,26 +175,8 @@ pub async fn install_tablet_update(
     if requested_version != manifest_version {
         return Err("更新版本已经变化，请重新检查更新".to_string());
     }
-    let current =
-        Version::parse(CURRENT_VERSION).map_err(|error| format!("当前版本号无效：{error}"))?;
-    let latest =
-        Version::parse(manifest_version).map_err(|error| format!("更新版本号无效：{error}"))?;
-    if latest <= current {
-        return Err("当前已经是最新版本".to_string());
-    }
-
-    let update_directory = app
-        .path()
-        .app_cache_dir()
-        .map_err(|error| format!("无法定位更新缓存目录：{error}"))?
-        .join("tablet-updates");
-    fs::create_dir_all(&update_directory)
-        .await
-        .map_err(|error| format!("无法创建更新缓存目录：{error}"))?;
-    let apk_path = update_directory.join(format!(
-        "inspiration-drawer-tablet-{}.apk",
-        manifest_version
-    ));
+    ensure_newer_update(&manifest)?;
+    let apk_path = update_apk_path(&app, manifest_version).await?;
 
     let cached = verify_apk_file(&apk_path, &manifest.apk)
         .await
@@ -169,6 +200,32 @@ pub async fn install_tablet_update(
         installer_launched: install.0,
         permission_required: install.1,
     })
+}
+
+fn ensure_newer_update(manifest: &TabletUpdateManifest) -> Result<(), String> {
+    let current =
+        Version::parse(CURRENT_VERSION).map_err(|error| format!("当前版本号无效：{error}"))?;
+    let latest = Version::parse(manifest.version.trim_start_matches('v'))
+        .map_err(|error| format!("更新版本号无效：{error}"))?;
+    if latest <= current {
+        return Err("当前已经是最新版本".to_string());
+    }
+    Ok(())
+}
+
+async fn update_apk_path(app: &AppHandle, version: &str) -> Result<PathBuf, String> {
+    let update_directory = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("无法定位更新缓存目录：{error}"))?
+        .join("tablet-updates");
+    fs::create_dir_all(&update_directory)
+        .await
+        .map_err(|error| format!("无法创建更新缓存目录：{error}"))?;
+    Ok(update_directory.join(format!(
+        "inspiration-drawer-tablet-{}.apk",
+        version.trim_start_matches('v')
+    )))
 }
 
 async fn fetch_update_manifest() -> Result<(TabletUpdateManifest, String), String> {

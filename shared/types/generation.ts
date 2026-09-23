@@ -41,3 +41,33 @@ export interface GeneratedImageResult {
 }
 
 export type ImageGenerationStatus = "idle" | "queued" | "running" | "success" | "error";
+
+export type VideoGenerationStatus = ImageGenerationStatus;
+
+export interface VideoModelConfig {
+  provider: ImageGenerationProvider;
+  model: string;
+}
+
+export interface VideoGenerationRequest {
+  id: string;
+  prompt: string;
+  inputAssetIds: string[];
+  upstreamNodeIds?: string[];
+  textNodeIds?: string[];
+  model: VideoModelConfig;
+  aspectRatio?: string;
+  resolution?: string;
+  duration?: number;
+  inputMode?: "REF" | "FLF";
+  count: number;
+  createdAt: number;
+}
+
+export interface GeneratedVideoResult {
+  id: string;
+  requestId: string;
+  uri: string;
+  mimeType: string;
+  createdAt: number;
+}

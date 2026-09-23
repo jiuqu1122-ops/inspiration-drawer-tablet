@@ -38,6 +38,7 @@ export async function verifyServerEmailCode(input: {
   challengeId: string;
   code: string;
   displayName?: string;
+  inviteCode?: string;
 }): Promise<ServerSession> {
   assertTauriRuntime();
   return invoke<ServerSession>("verify_server_email_code", {
@@ -46,6 +47,7 @@ export async function verifyServerEmailCode(input: {
       challengeId: input.challengeId,
       code: input.code.trim(),
       displayName: input.displayName?.trim() || undefined,
+      inviteCode: input.inviteCode?.trim().toUpperCase() || undefined,
     },
   });
 }

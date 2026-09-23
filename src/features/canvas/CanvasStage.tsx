@@ -8,6 +8,7 @@ import {
   Link,
   MagicWand,
   Play,
+  Selection,
   ShareNetwork,
   SlidersHorizontal,
   TextT,
@@ -21,6 +22,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
@@ -37,21 +39,40 @@ import {
   type CanvasPoint,
   type CanvasRuleNode,
   type CanvasTextNode,
+  type CanvasVideoNode,
   type CanvasViewport,
   type ImageAsset,
   type ImageGenerationRequest,
   type ImageRulePresetId,
   type ImageRuleState,
+  type VideoGenerationRequest,
 } from "../../../shared";
 import { saveImageToGallery, shareImage } from "../../services/tabletMediaService";
+import type { ServerImageModelCapabilities } from "../../services/tauriChatService";
 
 export interface CanvasAssetView {
   asset: ImageAsset;
   displayUri: string;
 }
 
+export interface CanvasImageModelOption {
+  id: string;
+  displayName?: string;
+  capabilities?: ServerImageModelCapabilities;
+}
+
+export interface CanvasVideoModelOption {
+  id: string;
+  displayName?: string;
+  capabilities?: ServerImageModelCapabilities;
+}
+
 export type GenerationNodeUpdate = Partial<
   Pick<ImageGenerationRequest, "prompt" | "aspectRatio" | "resolution" | "count" | "model">
+>;
+
+export type VideoNodeUpdate = Partial<
+  Pick<VideoGenerationRequest, "prompt" | "aspectRatio" | "resolution" | "duration" | "count" | "model" | "inputMode">
 >;
 
 interface CanvasStageProps {
@@ -59,19 +80,30 @@ interface CanvasStageProps {
   assets: CanvasAssetView[];
   viewport: CanvasViewport;
   selectedNodeId?: string;
+  selectedNodeIds?: ReadonlySet<string>;
   optimizingNodeIds: ReadonlySet<string>;
   onImportRequest: () => void;
   onGenerateRequest: () => void;
+  imageModelOptions?: CanvasImageModelOption[];
+  videoModelOptions?: CanvasVideoModelOption[];
+  defaultImageModel?: string;
+  defaultVideoModel?: string;
   onViewportChange: (viewport: CanvasViewport) => void;
   onNodeMove: (nodeId: string, point: CanvasPoint) => void;
+  onNodesMove?: (moves: Array<{ nodeId: string; point: CanvasPoint }>) => void;
   onNodeRemove: (nodeId: string) => void;
+  onNodesRemove?: (nodeIds: string[]) => void;
   onSelectNode: (nodeId?: string) => void;
+  onSelectNodes?: (nodeIds: string[]) => void;
+  onGroupNodes?: (nodeIds: string[]) => void;
   onGenerationChange: (nodeId: string, update: GenerationNodeUpdate) => void;
+  onVideoChange?: (nodeId: string, update: VideoNodeUpdate) => void;
   onRuleNodeChange: (nodeId: string, presetId: ImageRulePresetId, rules: ImageRuleState) => void;
   onTextNodeChange: (nodeId: string, update: Partial<Pick<CanvasTextNode, "prompt" | "systemPrompt">>) => void;
   onRunTextNode: (nodeId: string) => void;
   onOptimizePrompt: (nodeId: string) => void;
   onRunGeneration: (nodeId: string) => void;
+  onRunVideo?: (nodeId: string) => void;
   onGeneratedResultSave: (assetId: string) => void;
   onGeneratedResultRemove: (assetId: string) => void;
   onConnect: (sourceNodeId: string, targetNodeId: string) => void;
@@ -99,6 +131,14 @@ type Gesture =
       startPoint: CanvasPoint;
       startNode: CanvasPoint;
       currentNode: CanvasPoint;
+      selectedNodeIds: string[];
+      startNodes: Record<string, CanvasPoint>;
+    }
+  | {
+      mode: "select";
+      pointerId: number;
+      startPoint: CanvasPoint;
+      currentPoint: CanvasPoint;
     }
   | {
       mode: "connect";
@@ -127,6 +167,7 @@ interface ContextMenuState {
   nodeId: string;
   left: number;
   top: number;
+  nodeIds: string[];
 }
 
 interface ConnectionMenuState {
@@ -154,19 +195,30 @@ export function CanvasStage({
   assets,
   viewport,
   selectedNodeId,
+  selectedNodeIds,
   optimizingNodeIds,
   onImportRequest,
   onGenerateRequest,
+  imageModelOptions,
+  videoModelOptions,
+  defaultImageModel,
+  defaultVideoModel,
   onViewportChange,
   onNodeMove,
+  onNodesMove,
   onNodeRemove,
+  onNodesRemove,
   onSelectNode,
+  onSelectNodes,
+  onGroupNodes,
   onGenerationChange,
+  onVideoChange,
   onRuleNodeChange,
   onTextNodeChange,
   onRunTextNode,
   onOptimizePrompt,
   onRunGeneration,
+  onRunVideo,
   onGeneratedResultSave,
   onGeneratedResultRemove,
   onConnect,
@@ -187,6 +239,8 @@ export function CanvasStage({
   const connectionPressTimerRef = useRef<number | undefined>(undefined);
   const connectionLayoutFrameRef = useRef<number | undefined>(undefined);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectionRect, setSelectionRect] = useState<{ start: CanvasPoint; current: CanvasPoint }>();
   const [connectionMenu, setConnectionMenu] = useState<ConnectionMenuState>();
   const [connectionSourceId, setConnectionSourceId] = useState<string>();
   const [connectionDraft, setConnectionDraft] = useState<ConnectionDraft>();
@@ -427,9 +481,22 @@ export function CanvasStage({
   const promoteToPinch = useCallback(() => {
     clearLongPress();
     clearConnectionPress();
+    setSelectionRect(undefined);
     const currentGesture = gestureRef.current;
     if (currentGesture?.mode === "drag") {
-      onNodeMove(currentGesture.nodeId, currentGesture.currentNode);
+      const delta = {
+        x: currentGesture.currentNode.x - currentGesture.startNode.x,
+        y: currentGesture.currentNode.y - currentGesture.startNode.y,
+      };
+      const moves = currentGesture.selectedNodeIds.map((nodeId) => ({
+        nodeId,
+        point: {
+          x: (currentGesture.startNodes[nodeId]?.x ?? currentGesture.currentNode.x) + delta.x,
+          y: (currentGesture.startNodes[nodeId]?.y ?? currentGesture.currentNode.y) + delta.y,
+        },
+      }));
+      if (onNodesMove && moves.length > 1) onNodesMove(moves);
+      else onNodeMove(currentGesture.nodeId, currentGesture.currentNode);
     }
     if (currentGesture?.mode === "connect") {
       setConnectionDraft(undefined);
@@ -548,7 +615,27 @@ export function CanvasStage({
     const node = nodeId ? nodes.find((candidate) => candidate.id === nodeId) : undefined;
 
     if (node) {
-      onSelectNode(node.id);
+      const selected = new Set(selectedNodeIds ?? (selectedNodeId ? [selectedNodeId] : []));
+      const groupMembers = node.groupId
+        ? nodes.filter((candidate) => candidate.groupId === node.groupId).map((candidate) => candidate.id)
+        : [node.id];
+      let nextSelected = [...selected];
+      if (event.shiftKey) {
+        const shouldRemove = groupMembers.every((candidateId) => selected.has(candidateId));
+        nextSelected = shouldRemove
+          ? nextSelected.filter((candidate) => !groupMembers.includes(candidate))
+          : Array.from(new Set([...nextSelected, ...groupMembers]));
+        if (!nextSelected.length) nextSelected = [node.id];
+      } else if (!selected.has(node.id) || groupMembers.some((candidateId) => !selected.has(candidateId))) {
+        nextSelected = groupMembers;
+      }
+      if (onSelectNodes) onSelectNodes(nextSelected);
+      if (!onSelectNodes) onSelectNode(node.id);
+      const draggedNodeIds = nextSelected.length > 1 ? nextSelected : [node.id];
+      const startNodes = Object.fromEntries(draggedNodeIds.flatMap((candidateId) => {
+        const candidate = nodesById.get(candidateId);
+        return candidate ? [[candidateId, { x: candidate.x, y: candidate.y }]] : [];
+      }));
       gestureRef.current = {
         mode: "drag",
         pointerId: event.pointerId,
@@ -556,10 +643,20 @@ export function CanvasStage({
         startPoint: point,
         startNode: { x: node.x, y: node.y },
         currentNode: { x: node.x, y: node.y },
+        selectedNodeIds: draggedNodeIds,
+        startNodes,
       };
       longPressOriginRef.current = point;
       longPressTimerRef.current = window.setTimeout(() => {
-        setContextMenu({ nodeId: node.id, left: point.x, top: point.y });
+        if (nextSelected.some((candidateId) => !selected.has(candidateId))) {
+          onSelectNodes?.(nextSelected);
+        }
+        setContextMenu({
+          nodeId: node.id,
+          nodeIds: draggedNodeIds,
+          left: point.x,
+          top: point.y,
+        });
       }, LONG_PRESS_MS);
       return;
     }
@@ -581,13 +678,24 @@ export function CanvasStage({
 
     setConnectionSourceId(undefined);
     setConnectionDraft(undefined);
-    onSelectNode(undefined);
-    gestureRef.current = {
-      mode: "pan",
-      pointerId: event.pointerId,
-      startPoint: point,
-      startViewport: { ...liveViewportRef.current },
-    };
+    if (selectionMode || (event.pointerType === "mouse" && event.shiftKey)) {
+      gestureRef.current = {
+        mode: "select",
+        pointerId: event.pointerId,
+        startPoint: point,
+        currentPoint: point,
+      };
+      setSelectionRect({ start: point, current: point });
+    } else {
+      onSelectNode(undefined);
+      onSelectNodes?.([]);
+      gestureRef.current = {
+        mode: "pan",
+        pointerId: event.pointerId,
+        startPoint: point,
+        startViewport: { ...liveViewportRef.current },
+      };
+    }
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -601,6 +709,12 @@ export function CanvasStage({
 
     if (gesture?.mode === "connection-menu" && gesture.pointerId === event.pointerId) {
       if (getDistance(gesture.startPoint, point) > 10) clearConnectionPress();
+      return;
+    }
+
+    if (gesture?.mode === "select" && gesture.pointerId === event.pointerId) {
+      gesture.currentPoint = point;
+      setSelectionRect({ start: gesture.startPoint, current: point });
       return;
     }
 
@@ -666,11 +780,18 @@ export function CanvasStage({
         y: gesture.startNode.y + (point.y - gesture.startPoint.y) / scale,
       };
       gesture.currentNode = next;
-      const element = nodeElementsRef.current.get(gesture.nodeId);
-      if (element) {
-        element.style.transform = `translate3d(${next.x}px, ${next.y}px, 0)`;
-        refreshConnectionLayout();
-      }
+      const delta = {
+        x: (point.x - gesture.startPoint.x) / scale,
+        y: (point.y - gesture.startPoint.y) / scale,
+      };
+      gesture.selectedNodeIds.forEach((selectedId) => {
+        const start = gesture.startNodes[selectedId];
+        const element = nodeElementsRef.current.get(selectedId);
+        if (start && element) {
+          element.style.transform = `translate3d(${start.x + delta.x}px, ${start.y + delta.y}px, 0)`;
+        }
+      });
+      refreshConnectionLayout();
     }
   };
 
@@ -708,8 +829,47 @@ export function CanvasStage({
       return;
     }
 
+    if (gesture?.mode === "select" && gesture.pointerId === event.pointerId) {
+      const bounds = normalizeRect(gesture.startPoint, gesture.currentPoint);
+      const scale = liveViewportRef.current.scale;
+      const currentViewport = liveViewportRef.current;
+      const selectedIds = nodes.filter((node) => {
+        const left = node.x * scale + currentViewport.x;
+        const top = node.y * scale + currentViewport.y;
+        const right = left + node.width * scale;
+        const bottom = top + node.height * scale;
+        return right >= bounds.left && left <= bounds.right && bottom >= bounds.top && top <= bounds.bottom;
+      }).map((node) => node.id);
+      const selectedSet = new Set(selectedIds);
+      nodes.forEach((node) => {
+        if (node.groupId && selectedSet.has(node.id)) {
+          nodes.filter((candidate) => candidate.groupId === node.groupId).forEach((candidate) => selectedSet.add(candidate.id));
+        }
+      });
+      const expandedSelectedIds = nodes.filter((node) => selectedSet.has(node.id)).map((node) => node.id);
+      if (onSelectNodes) onSelectNodes(expandedSelectedIds);
+      if (!onSelectNodes) onSelectNode(expandedSelectedIds[expandedSelectedIds.length - 1]);
+      setSelectionRect(undefined);
+      gestureRef.current = undefined;
+      onViewportChange({ ...liveViewportRef.current });
+      return;
+    }
+
     if (gesture?.mode === "drag" && gesture.pointerId === event.pointerId) {
-      onNodeMove(gesture.nodeId, gesture.currentNode);
+      const scale = liveViewportRef.current.scale;
+      const delta = {
+        x: (getStagePoint(event).x - gesture.startPoint.x) / scale,
+        y: (getStagePoint(event).y - gesture.startPoint.y) / scale,
+      };
+      const moves = gesture.selectedNodeIds.map((nodeId) => ({
+        nodeId,
+        point: {
+          x: (gesture.startNodes[nodeId]?.x ?? gesture.currentNode.x) + delta.x,
+          y: (gesture.startNodes[nodeId]?.y ?? gesture.currentNode.y) + delta.y,
+        },
+      }));
+      if (onNodesMove && moves.length > 1) onNodesMove(moves);
+      else onNodeMove(gesture.nodeId, gesture.currentNode);
     }
 
     if (activePointersRef.current.size === 1) {
@@ -740,6 +900,31 @@ export function CanvasStage({
       onContextMenu={(event) => event.preventDefault()}
     >
       <div className="canvas-grid" aria-hidden="true" />
+      <div className="canvas-selection-toolbar" data-canvas-control="true">
+        <button
+          type="button"
+          className={selectionMode ? "is-active" : ""}
+          aria-pressed={selectionMode}
+          onClick={() => {
+            setSelectionMode((current) => !current);
+            setSelectionRect(undefined);
+          }}
+          title="框选节点"
+        >
+          <Selection />
+          <span>{selectionMode ? "退出多选" : "框选节点"}</span>
+        </button>
+        {(selectedNodeIds?.size ?? (selectedNodeId ? 1 : 0)) > 1 && (
+          <span className="canvas-selection-count">已选 {selectedNodeIds?.size ?? 0}</span>
+        )}
+      </div>
+      {selectionRect && (
+        <div
+          className="canvas-selection-rect"
+          style={selectionRectStyle(selectionRect.start, selectionRect.current)}
+          aria-hidden="true"
+        />
+      )}
       <canvas
         ref={connectionCanvasRef}
         className="node-connections-canvas"
@@ -808,7 +993,7 @@ export function CanvasStage({
                 key={node.id}
                 node={node}
                 assetView={assetView}
-                isSelected={selectedNodeId === node.id}
+                isSelected={selectedNodeIds?.has(node.id) ?? selectedNodeId === node.id}
                 isConnectionSource={connectionSourceId === node.id}
                 registerElement={(element) => registerNodeElement(node.id, element, nodeElementsRef.current)}
                 onBeginConnection={(event) => beginConnection(event, node)}
@@ -821,7 +1006,7 @@ export function CanvasStage({
               <RuleCanvasNode
                 key={node.id}
                 node={node}
-                isSelected={selectedNodeId === node.id}
+                isSelected={selectedNodeIds?.has(node.id) ?? selectedNodeId === node.id}
                 isConnectionSource={connectionSourceId === node.id}
                 registerElement={(element) => registerNodeElement(node.id, element, nodeElementsRef.current)}
                 onBeginConnection={(event) => beginConnection(event, node)}
@@ -836,7 +1021,7 @@ export function CanvasStage({
                 key={node.id}
                 node={node}
                 nodesById={nodesById}
-                isSelected={selectedNodeId === node.id}
+                isSelected={selectedNodeIds?.has(node.id) ?? selectedNodeId === node.id}
                 isConnectionSource={connectionSourceId === node.id}
                 hasPendingConnection={Boolean(connectionSourceId && connectionSourceId !== node.id)}
                 isConnectionTarget={connectionDraft?.targetNodeId === node.id}
@@ -855,14 +1040,41 @@ export function CanvasStage({
             );
           }
 
+          if (node.type === "video") {
+            return (
+              <VideoCanvasNode
+                key={node.id}
+                node={node}
+                videoModelOptions={videoModelOptions}
+                defaultVideoModel={defaultVideoModel}
+                assetsById={assetsById}
+                isSelected={selectedNodeIds?.has(node.id) ?? selectedNodeId === node.id}
+                hasPendingConnection={Boolean(connectionSourceId)}
+                isConnectionTarget={connectionDraft?.targetNodeId === node.id}
+                registerElement={(element) => registerNodeElement(node.id, element, nodeElementsRef.current)}
+                onAcceptConnection={() => {
+                  if (connectionSourceId) {
+                    onConnect(connectionSourceId, node.id);
+                    setConnectionSourceId(undefined);
+                  }
+                }}
+                onChange={(update) => onVideoChange?.(node.id, update)}
+                onRun={() => onRunVideo?.(node.id)}
+                onBeginConnection={(event) => beginConnection(event, node)}
+              />
+            );
+          }
+
           return (
             <GenerationCanvasNode
               key={node.id}
               node={node}
+              imageModelOptions={imageModelOptions}
+              defaultImageModel={defaultImageModel}
               assetsById={assetsById}
               rulesById={rulesById}
               nodesById={nodesById}
-              isSelected={selectedNodeId === node.id}
+              isSelected={selectedNodeIds?.has(node.id) ?? selectedNodeId === node.id}
               isOptimizing={optimizingNodeIds.has(node.id)}
               hasPendingConnection={Boolean(connectionSourceId)}
               isConnectionTarget={connectionDraft?.targetNodeId === node.id}
@@ -918,10 +1130,24 @@ export function CanvasStage({
           style={{ left: contextMenu.left, top: contextMenu.top }}
           data-canvas-control="true"
         >
+          {contextMenu.nodeIds.length > 1 && onGroupNodes && (
+            <button
+              type="button"
+              className="canvas-context-group-action"
+              onClick={() => {
+                onGroupNodes(contextMenu.nodeIds);
+                setContextMenu(undefined);
+              }}
+            >
+              <Selection />编组 {contextMenu.nodeIds.length} 个节点
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
-              onNodeRemove(contextMenu.nodeId);
+              if (onNodesRemove && contextMenu.nodeIds.length > 1) onNodesRemove(contextMenu.nodeIds);
+              else onNodeRemove(contextMenu.nodeId);
+              onSelectNodes?.([]);
               setContextMenu(undefined);
             }}
           >
@@ -1023,6 +1249,7 @@ function ImageCanvasNode({
       ref={registerElement}
       className={`${isSelected ? "canvas-node image-node is-selected" : "canvas-node image-node"}${isConnectionSource ? " is-connection-source" : ""}`}
       data-canvas-node-id={node.id}
+      data-canvas-group-id={node.groupId}
       style={{ width: node.width, height: node.height, transform: `translate3d(${node.x}px, ${node.y}px, 0)`, zIndex: node.zIndex }}
     >
       <img src={assetView.displayUri} alt={node.title} draggable={false} />
@@ -1063,6 +1290,7 @@ function RuleCanvasNode({
       ref={registerElement}
       className={`${isSelected ? "canvas-node rule-node is-selected" : "canvas-node rule-node"}${isConnectionSource ? " is-connection-source" : ""}`}
       data-canvas-node-id={node.id}
+      data-canvas-group-id={node.groupId}
       style={{ width: node.width, height: node.height, transform: `translate3d(${node.x}px, ${node.y}px, 0)`, zIndex: node.zIndex }}
     >
       <header className="rule-node-header">
@@ -1154,6 +1382,7 @@ function TextCanvasNode({
       ref={registerElement}
       className={`${isSelected ? "canvas-node text-node is-selected" : "canvas-node text-node"} is-${node.status}${isConnectionSource ? " is-connection-source" : ""}`}
       data-canvas-node-id={node.id}
+      data-canvas-group-id={node.groupId}
       data-connection-target-node-id={node.id}
       style={{ width: node.width, height: node.height, transform: `translate3d(${node.x}px, ${node.y}px, 0)`, zIndex: node.zIndex }}
     >
@@ -1217,6 +1446,8 @@ function TextCanvasNode({
 
 function GenerationCanvasNode({
   node,
+  imageModelOptions,
+  defaultImageModel,
   assetsById,
   rulesById,
   nodesById,
@@ -1238,6 +1469,8 @@ function GenerationCanvasNode({
   onDisconnectNode,
 }: {
   node: CanvasGenerationNode;
+  imageModelOptions?: CanvasImageModelOption[];
+  defaultImageModel?: string;
   assetsById: Map<string, CanvasAssetView>;
   rulesById: Map<string, CanvasRuleNode>;
   nodesById: Map<string, CanvasNode>;
@@ -1258,13 +1491,24 @@ function GenerationCanvasNode({
   onDisconnectRule: (ruleNodeId: string) => void;
   onDisconnectNode: (sourceNodeId: string) => void;
 }) {
+  const modelOption = imageModelOptions?.find((option) => option.id === node.request.model.model);
   const modelPreset = getImageModelPreset(node.request.model.model);
-  const aspectRatioOptions = getImageAspectRatioOptions(modelPreset.id, node.request.resolution);
-  const aspectRatioValue = normalizeImageAspectRatio(
+  const modelName = modelOption?.displayName?.trim()
+    || modelOption?.id
+    || (node.request.model.model === defaultImageModel ? "默认模型" : modelPreset.name);
+  const resolutions = getCanvasModelResolutions(modelOption, modelPreset);
+  const resolution = resolutions.includes(node.request.resolution)
+    ? node.request.resolution
+    : getCanvasModelDefaultResolution(modelOption, modelPreset);
+  const aspectRatioOptions = getCanvasModelAspectRatios(modelOption, modelPreset, resolution);
+  const aspectRatioValue = normalizeCanvasModelAspectRatio(
+    modelOption,
     modelPreset.id,
-    node.request.resolution,
+    resolution,
     node.request.aspectRatio,
   );
+  const countMax = getCanvasModelMaxOutputs(modelOption);
+  const countValue = Math.min(countMax, Math.max(1, Math.round(node.request.count)));
   const resultViews = node.results
     .map((result) => assetsById.get(result.id))
     .filter((view): view is CanvasAssetView => Boolean(view));
@@ -1289,13 +1533,14 @@ function GenerationCanvasNode({
       ref={registerElement}
       className={`${isSelected ? "canvas-node generation-node is-selected" : "canvas-node generation-node"} is-${node.status}`}
       data-canvas-node-id={node.id}
+      data-canvas-group-id={node.groupId}
       data-generation-target-node-id={node.id}
       data-connection-target-node-id={node.id}
       style={{ width: node.width, height: node.height, transform: `translate3d(${node.x}px, ${node.y}px, 0)`, zIndex: node.zIndex }}
     >
       <header className="generation-node-header">
         <span className="generation-node-icon"><MagicWand weight="fill" /></span>
-        <span><strong>{node.title}</strong><small>{modelPreset.name} · {referenceViews.length} 参考 · {connectedRules.length} 规则</small></span>
+        <span><strong>{node.title}</strong><small>{modelName} · {referenceViews.length} 参考 · {connectedRules.length} 规则</small></span>
         <span className={`node-status is-${node.status}`}>{statusLabel}</span>
       </header>
 
@@ -1323,26 +1568,33 @@ function GenerationCanvasNode({
         <label className="model-select-field">
           <span className="field-label">模型</span>
           <select
-            value={modelPreset.id}
-            title={`模型：${modelPreset.name}`}
+            value={node.request.model.model}
+            title={`模型：${modelName}`}
             onChange={(event) => {
-              const preset = getImageModelPreset(event.currentTarget.value);
-              const resolution = preset.resolutions.includes(node.request.resolution)
+              const selectedId = event.currentTarget.value;
+              const selectedOption = imageModelOptions?.find((option) => option.id === selectedId);
+              const preset = getImageModelPreset(selectedId);
+              const nextResolutions = getCanvasModelResolutions(selectedOption, preset);
+              const nextResolution = nextResolutions.includes(node.request.resolution)
                 ? node.request.resolution
-                : preset.defaultResolution;
+                : getCanvasModelDefaultResolution(selectedOption, preset);
               onChange({
-                model: { provider: "server-gateway", model: preset.id },
-                resolution,
-                aspectRatio: normalizeImageAspectRatio(
+                model: { provider: "server-gateway", model: selectedId },
+                resolution: nextResolution,
+                aspectRatio: normalizeCanvasModelAspectRatio(
+                  selectedOption,
                   preset.id,
-                  resolution,
+                  nextResolution,
                   node.request.aspectRatio,
                 ),
               });
             }}
           >
-            {IMAGE_MODEL_PRESETS.map((preset) => (
-              <option key={preset.id} value={preset.id}>{preset.name}</option>
+            {(imageModelOptions?.length
+              ? imageModelOptions
+              : IMAGE_MODEL_PRESETS.map((preset) => ({ id: preset.id, displayName: preset.name })))
+              .map((option) => (
+              <option key={option.id} value={option.id}>{option.displayName || option.id}</option>
             ))}
           </select>
         </label>
@@ -1472,12 +1724,13 @@ function GenerationCanvasNode({
           <label>
             <span>清晰度</span>
             <select
-              value={node.request.resolution}
+              value={resolution}
               onChange={(event) => {
                 const resolution = event.currentTarget.value as ImageGenerationRequest["resolution"];
                 onChange({
                   resolution,
-                  aspectRatio: normalizeImageAspectRatio(
+                  aspectRatio: normalizeCanvasModelAspectRatio(
+                    modelOption,
                     modelPreset.id,
                     resolution,
                     node.request.aspectRatio,
@@ -1485,13 +1738,13 @@ function GenerationCanvasNode({
                 });
               }}
             >
-              {modelPreset.resolutions.map((resolution) => <option key={resolution} value={resolution}>{resolution.toUpperCase()}</option>)}
+              {resolutions.map((resolution) => <option key={resolution} value={resolution}>{resolution.toUpperCase()}</option>)}
             </select>
           </label>
           <label>
             <span>张数</span>
-            <select value={node.request.count} onChange={(event) => onChange({ count: Number(event.currentTarget.value) })}>
-              <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option><option value={4}>4</option>
+            <select value={countValue} onChange={(event) => onChange({ count: Number(event.currentTarget.value) })}>
+              {Array.from({ length: countMax }, (_, index) => index + 1).map((count) => <option key={count} value={count}>{count}</option>)}
             </select>
           </label>
           <button className="node-run-action" type="button" onClick={onRun} disabled={node.status === "running" || !node.request.prompt.trim()}>
@@ -1504,10 +1757,172 @@ function GenerationCanvasNode({
   );
 }
 
+function VideoCanvasNode({
+  node,
+  videoModelOptions,
+  defaultVideoModel,
+  assetsById,
+  isSelected,
+  hasPendingConnection,
+  isConnectionTarget,
+  registerElement,
+  onAcceptConnection,
+  onChange,
+  onRun,
+  onBeginConnection,
+}: {
+  node: CanvasVideoNode;
+  videoModelOptions?: CanvasVideoModelOption[];
+  defaultVideoModel?: string;
+  assetsById: Map<string, CanvasAssetView>;
+  isSelected: boolean;
+  hasPendingConnection: boolean;
+  isConnectionTarget: boolean;
+  registerElement: (element: HTMLDivElement | null) => void;
+  onAcceptConnection: () => void;
+  onChange: (update: VideoNodeUpdate) => void;
+  onRun: () => void;
+  onBeginConnection: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+}) {
+  const modelOption = videoModelOptions?.find((option) => option.id === node.request.model.model);
+  const modelName = modelOption?.displayName?.trim() || modelOption?.id
+    || (node.request.model.model === defaultVideoModel ? "默认视频模型" : node.request.model.model);
+  const models = videoModelOptions?.length
+    ? videoModelOptions
+    : [{ id: node.request.model.model || "seedance-2.0", displayName: modelName }];
+  const capabilities = modelOption?.capabilities;
+  const resolutions = getVideoCapabilityValues(capabilities?.resolutions, ["720p", "1080p"]);
+  const resolution = node.request.resolution && resolutions.includes(node.request.resolution)
+    ? node.request.resolution
+    : String(capabilities?.defaultResolution ?? resolutions[0] ?? "720p");
+  const aspectRatios = getVideoCapabilityValues(capabilities?.aspectRatios, ["16:9", "9:16", "1:1"]);
+  const aspectRatio = node.request.aspectRatio && aspectRatios.includes(node.request.aspectRatio)
+    ? node.request.aspectRatio
+    : String(capabilities?.defaultAspectRatio ?? aspectRatios[0] ?? "16:9");
+  const durations = getVideoDurationValues(capabilities?.durations, [5, 10]);
+  const duration = durations.includes(Number(node.request.duration))
+    ? Number(node.request.duration)
+    : Number(capabilities?.defaultDuration ?? durations[0] ?? 5);
+  const maxOutputs = Math.min(4, Math.max(1, Number(capabilities?.maxOutputs ?? 1) || 1));
+  const count = Math.min(maxOutputs, Math.max(1, Math.round(node.request.count)));
+  const references = node.request.inputAssetIds.map((id) => assetsById.get(id)).filter(Boolean) as CanvasAssetView[];
+  const statusLabel = node.status === "running" ? "生成中" : node.status === "success" ? "完成" : node.status === "error" ? "失败" : "待运行";
+
+  return (
+    <div
+      ref={registerElement}
+      className={`${isSelected ? "canvas-node generation-node video-node is-selected" : "canvas-node generation-node video-node"} is-${node.status}`}
+      data-canvas-node-id={node.id}
+      data-canvas-group-id={node.groupId}
+      data-connection-target-node-id={node.id}
+      style={{ width: node.width, height: node.height, transform: `translate3d(${node.x}px, ${node.y}px, 0)`, zIndex: node.zIndex }}
+    >
+      <header className="generation-node-header video-node-header">
+        <span className="generation-node-icon"><Play weight="fill" /></span>
+        <span><strong>{node.title}</strong><small>{modelName} · {references.length} 个参考图</small></span>
+        <span className={`node-status is-${node.status}`}>{statusLabel}</span>
+      </header>
+      <button className="node-port output-port generation-output-port" type="button" data-canvas-control="true" aria-label="连接视频结果" onPointerDown={onBeginConnection}><span /></button>
+      <button className={`${hasPendingConnection ? "node-port input-port is-ready" : "node-port input-port"}${isConnectionTarget ? " is-targeted" : ""}`} type="button" data-canvas-control="true" data-connection-input-node-id={node.id} onClick={onAcceptConnection}><span /></button>
+      <div className="generation-node-content" data-canvas-control="true">
+        <label className="model-select-field"><span className="field-label">模型</span><select value={node.request.model.model} onChange={(event) => onChange({ model: { provider: "server-gateway", model: event.currentTarget.value } })}>{models.map((option) => <option key={option.id} value={option.id}>{option.displayName || option.id}</option>)}</select></label>
+        {references.length > 0 && <div className="node-inputs-strip"><span className="field-label">参考图</span><div className="node-input-items">{references.slice(0, 4).map(({ asset, displayUri }) => <span className="reference-thumb" key={asset.id}><img src={displayUri} alt={asset.name} /></span>)}</div></div>}
+        <div className={`generation-preview is-${node.status}`}>
+          {node.results.length > 0 && node.status !== "running" ? <div className="video-result-grid">{node.results.slice(0, 4).map((result) => <video key={result.id} src={result.uri} controls playsInline preload="metadata" />)}</div>
+            : node.status === "running" ? <div className="generation-preview-state"><span className="generation-spinner" /><strong>正在生成视频</strong><small>服务端任务完成后会自动显示</small></div>
+              : node.status === "error" ? <div className="generation-preview-state is-error"><span>!</span><strong>生成失败</strong><small>{node.error}</small></div>
+                : <div className="generation-preview-state"><Play /><strong>视频生成结果</strong><small>输入提示词后运行当前节点</small></div>}
+        </div>
+        <label className="node-prompt-field"><span className="prompt-field-heading"><span className="field-label">视频提示词</span></span><textarea value={node.request.prompt} placeholder="描述镜头、主体运动、光线和风格…" onChange={(event) => onChange({ prompt: event.currentTarget.value })} /></label>
+        <footer className="generation-node-footer video-node-footer">
+          <label><span>比例</span><select value={aspectRatio} onChange={(event) => onChange({ aspectRatio: event.currentTarget.value })}>{aspectRatios.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+          <label><span>分辨率</span><select value={resolution} onChange={(event) => onChange({ resolution: event.currentTarget.value })}>{resolutions.map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}</select></label>
+          <label><span>时长</span><select value={duration} onChange={(event) => onChange({ duration: Number(event.currentTarget.value) })}>{durations.map((value) => <option key={value} value={value}>{value}s</option>)}</select></label>
+          <label><span>数量</span><select value={count} onChange={(event) => onChange({ count: Number(event.currentTarget.value) })}>{Array.from({ length: maxOutputs }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+          <button className="node-run-action" type="button" onClick={onRun} disabled={node.status === "running" || !node.request.prompt.trim()}>{node.status === "running" ? <span className="button-spinner" /> : <Play weight="fill" />}<span>{node.status === "running" ? "生成中" : "运行"}</span></button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function getVideoCapabilityValues(value: unknown, fallback: string[]): string[] {
+  const values = Array.isArray(value) ? value.map((entry) => String(entry).trim()).filter(Boolean) : [];
+  return Array.from(new Set(values.length ? values : fallback));
+}
+
+function getVideoDurationValues(value: unknown, fallback: number[]): number[] {
+  const values = Array.isArray(value)
+    ? value.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry) && entry > 0)
+    : [];
+  return Array.from(new Set(values.length ? values : fallback));
+}
+
+function getCanvasModelResolutions(
+  option: CanvasImageModelOption | undefined,
+  preset: ReturnType<typeof getImageModelPreset>,
+): ImageGenerationRequest["resolution"][] {
+  const values = Array.isArray(option?.capabilities?.resolutions)
+    ? option.capabilities.resolutions
+      .map((value) => String(value).trim().toLowerCase())
+      .filter((value): value is ImageGenerationRequest["resolution"] => /^(?:1k|2k|4k)$/.test(value))
+    : [];
+  const unique = Array.from(new Set(values));
+  return unique.length ? unique : preset.resolutions;
+}
+
+function getCanvasModelDefaultResolution(
+  option: CanvasImageModelOption | undefined,
+  preset: ReturnType<typeof getImageModelPreset>,
+): ImageGenerationRequest["resolution"] {
+  const values = getCanvasModelResolutions(option, preset);
+  const configured = String(option?.capabilities?.defaultResolution ?? "").trim().toLowerCase();
+  return values.includes(configured as ImageGenerationRequest["resolution"])
+    ? configured as ImageGenerationRequest["resolution"]
+    : values.includes(preset.defaultResolution) ? preset.defaultResolution : values[0] ?? "2k";
+}
+
+function getCanvasModelAspectRatios(
+  option: CanvasImageModelOption | undefined,
+  preset: ReturnType<typeof getImageModelPreset>,
+  resolution: ImageGenerationRequest["resolution"],
+) {
+  const byResolution = option?.capabilities?.aspectRatiosByResolution?.[resolution];
+  const configured = Array.isArray(byResolution)
+    ? byResolution
+    : Array.isArray(option?.capabilities?.aspectRatios)
+      ? option.capabilities.aspectRatios
+      : undefined;
+  const values = configured
+    ?.map((value) => String(value).trim().replace(/脳/g, "x"))
+    .filter((value) => /^\d{1,5}(?::|x)\d{1,5}$/.test(value));
+  if (values?.length) {
+    return Array.from(new Set(values)).map((value) => ({ value, label: value.replace("x", "×") }));
+  }
+  return getImageAspectRatioOptions(preset.id, resolution);
+}
+
+function normalizeCanvasModelAspectRatio(
+  option: CanvasImageModelOption | undefined,
+  presetId: ReturnType<typeof getImageModelPreset>["id"],
+  resolution: ImageGenerationRequest["resolution"],
+  value: unknown,
+): ImageGenerationRequest["aspectRatio"] {
+  const options = getCanvasModelAspectRatios(option, getImageModelPreset(presetId), resolution);
+  const clean = String(value ?? "").trim().replace(/脳/g, "x");
+  if (options.some((candidate) => candidate.value === clean)) return clean as ImageGenerationRequest["aspectRatio"];
+  return normalizeImageAspectRatio(presetId, resolution, clean);
+}
+
+function getCanvasModelMaxOutputs(option: CanvasImageModelOption | undefined): number {
+  const raw = Number(option?.capabilities?.maxOutputs);
+  return Number.isFinite(raw) ? Math.min(4, Math.max(1, Math.round(raw))) : 4;
+}
+
 function collectConnections(nodes: CanvasNode[]) {
   const connections: Array<{
     source: CanvasNode;
-    target: CanvasGenerationNode | CanvasTextNode;
+    target: CanvasGenerationNode | CanvasVideoNode | CanvasTextNode;
     key: string;
     kind: "image" | "rule" | "text" | "generation";
   }> = [];
@@ -1521,17 +1936,19 @@ function collectConnections(nodes: CanvasNode[]) {
       });
       continue;
     }
-    if (target.type !== "generation") {
+    if (target.type !== "generation" && target.type !== "video") {
       continue;
     }
     target.request.inputAssetIds.forEach((assetId) => {
       const source = nodes.find((node) => node.type === "image" && node.assetId === assetId);
       if (source) connections.push({ source, target, key: `${source.id}-${target.id}-image`, kind: "image" });
     });
-    (target.request.ruleNodeIds ?? []).forEach((ruleNodeId) => {
+    if (target.type === "generation") {
+      (target.request.ruleNodeIds ?? []).forEach((ruleNodeId) => {
       const source = nodes.find((node) => node.type === "rule" && node.id === ruleNodeId);
       if (source) connections.push({ source, target, key: `${source.id}-${target.id}-rule`, kind: "rule" });
-    });
+      });
+    }
     (target.request.upstreamNodeIds ?? []).forEach((sourceNodeId) => {
       const source = nodes.find((node) => node.type === "generation" && node.id === sourceNodeId);
       if (source) connections.push({ source, target, key: `${source.id}-${target.id}-generation`, kind: "generation" });
@@ -1564,7 +1981,7 @@ function getOutputPoint(node: CanvasNode): CanvasPoint {
   return { x: node.x + node.width + 2, y: node.y + node.height / 2 };
 }
 
-function getInputPoint(node: CanvasGenerationNode | CanvasTextNode): CanvasPoint {
+function getInputPoint(node: CanvasGenerationNode | CanvasVideoNode | CanvasTextNode): CanvasPoint {
   // The input button is positioned with left:-28px and is 52px wide.
   return { x: node.x - 2, y: node.y + 76 };
 }
@@ -1738,4 +2155,23 @@ function getMidpoint(first: CanvasPoint, second: CanvasPoint): CanvasPoint {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
+}
+
+function normalizeRect(start: CanvasPoint, current: CanvasPoint) {
+  return {
+    left: Math.min(start.x, current.x),
+    top: Math.min(start.y, current.y),
+    right: Math.max(start.x, current.x),
+    bottom: Math.max(start.y, current.y),
+  };
+}
+
+function selectionRectStyle(start: CanvasPoint, current: CanvasPoint): CSSProperties {
+  const bounds = normalizeRect(start, current);
+  return {
+    left: bounds.left,
+    top: bounds.top,
+    width: Math.max(1, bounds.right - bounds.left),
+    height: Math.max(1, bounds.bottom - bounds.top),
+  };
 }

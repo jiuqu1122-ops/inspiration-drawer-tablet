@@ -18,6 +18,17 @@ interface AccountDialogProps {
   onSessionChange: (session: ServerSession) => void;
 }
 
+const ACCOUNT_CHALLENGE_STORAGE_KEY = "inspiration-drawer-tablet-account-challenge";
+
+interface PersistedAccountChallenge {
+  email: string;
+  displayName: string;
+  inviteCode: string;
+  code: string;
+  challenge: EmailCodeChallenge;
+  createdAt: number;
+}
+
 export function AccountDialog({
   open,
   session,
@@ -29,23 +40,75 @@ export function AccountDialog({
 }: AccountDialogProps) {
   const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [code, setCode] = useState("");
   const [challenge, setChallenge] = useState<EmailCodeChallenge>();
+  const [challengeCreatedAt, setChallengeCreatedAt] = useState<number>();
   const [redeemCode, setRedeemCode] = useState("");
   const [redeemSuccess, setRedeemSuccess] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
-    if (!open) return;
+    // Keep the verification step across Android WebView recreation/background
+    // suspension. The previous implementation cleared it every time the
+    // dialog reopened, forcing users into an endless "send code" loop.
+    try {
+      const raw = window.localStorage.getItem(ACCOUNT_CHALLENGE_STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as Partial<PersistedAccountChallenge>;
+      const challenge = saved.challenge;
+      if (!saved.email || !challenge?.challengeId || !Number.isFinite(challenge.expiresIn)
+        || Date.now() - Number(saved.createdAt || 0) > challenge.expiresIn * 1000) {
+        window.localStorage.removeItem(ACCOUNT_CHALLENGE_STORAGE_KEY);
+        return;
+      }
+      setEmail(saved.email);
+      setDisplayName(saved.displayName ?? "");
+      setInviteCode(saved.inviteCode ?? "");
+      setCode(saved.code ?? "");
+      setChallenge(challenge as EmailCodeChallenge);
+      setChallengeCreatedAt(Number(saved.createdAt) || Date.now());
+    } catch {
+      window.localStorage.removeItem(ACCOUNT_CHALLENGE_STORAGE_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open || challenge || email) return;
     setEmail(session.email ?? "");
     setDisplayName(session.displayName ?? "");
-    setCode("");
-    setChallenge(undefined);
-    setRedeemCode("");
-    setRedeemSuccess(undefined);
-    setError(undefined);
-  }, [open, session.displayName, session.email]);
+  }, [challenge, email, open, session.displayName, session.email]);
+
+  useEffect(() => {
+    if (!challenge || !email) return;
+    try {
+      const value: PersistedAccountChallenge = {
+        email,
+        displayName,
+        inviteCode,
+        code,
+        challenge,
+        createdAt: challengeCreatedAt ?? Date.now(),
+      };
+      window.localStorage.setItem(ACCOUNT_CHALLENGE_STORAGE_KEY, JSON.stringify(value));
+    } catch {
+      // Storage may be unavailable in a restricted WebView; the in-memory
+      // state still keeps the dialog usable while it remains mounted.
+    }
+  }, [challenge, challengeCreatedAt, code, displayName, email, inviteCode]);
+
+  useEffect(() => {
+    if (!challenge || !challengeCreatedAt) return;
+    const remaining = Math.max(0, challenge.expiresIn * 1000 - (Date.now() - challengeCreatedAt));
+    const timer = window.setTimeout(() => {
+      setChallenge(undefined);
+      setChallengeCreatedAt(undefined);
+      setCode("");
+      window.localStorage.removeItem(ACCOUNT_CHALLENGE_STORAGE_KEY);
+    }, remaining);
+    return () => window.clearTimeout(timer);
+  }, [challenge, challengeCreatedAt]);
 
   if (!open) return null;
 
@@ -56,6 +119,7 @@ export function AccountDialog({
     try {
       const result = await requestServerEmailCode(email);
       setChallenge(result);
+      setChallengeCreatedAt(Date.now());
       setCode("");
     } catch (reason) {
       setError(errorMessage(reason, "验证码发送失败"));
@@ -75,8 +139,13 @@ export function AccountDialog({
         challengeId: challenge.challengeId,
         code,
         displayName,
+        inviteCode,
       });
       onSessionChange(result);
+      window.localStorage.removeItem(ACCOUNT_CHALLENGE_STORAGE_KEY);
+      setChallenge(undefined);
+      setChallengeCreatedAt(undefined);
+      setCode("");
       onClose();
     } catch (reason) {
       setError(errorMessage(reason, "邮箱登录失败"));
@@ -183,7 +252,13 @@ export function AccountDialog({
           </div>
         ) : challenge ? (
           <form className="account-form" onSubmit={(event) => void verifyCode(event)}>
-            <button className="account-back-action" type="button" onClick={() => { setChallenge(undefined); setError(undefined); }}>
+            <button className="account-back-action" type="button" onClick={() => {
+              setChallenge(undefined);
+              setChallengeCreatedAt(undefined);
+              setCode("");
+              setError(undefined);
+              window.localStorage.removeItem(ACCOUNT_CHALLENGE_STORAGE_KEY);
+            }}>
               <ArrowLeft /> 更换邮箱
             </button>
             <div className="verification-copy">
@@ -219,6 +294,18 @@ export function AccountDialog({
             <label>
               <span>昵称 <small>仅首次注册需要</small></span>
               <input value={displayName} onChange={(event) => setDisplayName(event.currentTarget.value)} minLength={2} maxLength={32} placeholder="创作者" />
+            </label>
+            <label>
+              <span>邀请码 <small>新用户注册填写</small></span>
+              <input
+                value={inviteCode}
+                onChange={(event) => setInviteCode(event.currentTarget.value.toUpperCase())}
+                minLength={6}
+                maxLength={32}
+                autoCapitalize="characters"
+                autoComplete="off"
+                placeholder="输入邀请码"
+              />
             </label>
             {error && <p className="dialog-error" role="alert">{error}</p>}
             <button className="account-submit-action" type="submit" disabled={busy || !email.trim()}>

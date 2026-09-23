@@ -20,6 +20,9 @@ src-tauri/gen/android/keystore.properties
 # Generated update release payloads
 release/
 
+# Tauri regenerates Android WebView assets from dist during every build.
+src-tauri/gen/android/app/src/main/assets/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

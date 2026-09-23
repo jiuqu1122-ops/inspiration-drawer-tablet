@@ -18,10 +18,8 @@ pub struct AndroidKeepAlivePlugin<R: Runtime> {
 pub fn init_android_keep_alive<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("tablet-keep-alive")
         .setup(|app, api| {
-            let handle = api.register_android_plugin(
-                "com.inspirationdrawer.tablet",
-                "TabletKeepAlivePlugin",
-            )?;
+            let handle = api
+                .register_android_plugin("com.inspirationdrawer.tablet", "TabletKeepAlivePlugin")?;
             app.manage(AndroidKeepAlivePlugin { handle });
             Ok(())
         })

@@ -1,7 +1,10 @@
 import type {
   GeneratedImageResult,
+  GeneratedVideoResult,
   ImageGenerationRequest,
   ImageGenerationStatus,
+  VideoGenerationRequest,
+  VideoGenerationStatus,
 } from "./generation";
 import type { ImageRulePresetId, ImageRuleState } from "./imageRules";
 
@@ -26,6 +29,7 @@ interface CanvasNodeBase extends CanvasPoint, CanvasSize {
   workflowInstanceId?: string;
   workflowTemplateId?: string;
   workflowOrder?: number;
+  groupId?: string;
 }
 
 export interface CanvasImageNode extends CanvasNodeBase {
@@ -40,6 +44,15 @@ export interface CanvasGenerationNode extends CanvasNodeBase {
   request: ImageGenerationRequest;
   status: ImageGenerationStatus;
   results: GeneratedImageResult[];
+  error?: string;
+}
+
+export interface CanvasVideoNode extends CanvasNodeBase {
+  type: "video";
+  title: string;
+  request: VideoGenerationRequest;
+  status: VideoGenerationStatus;
+  results: GeneratedVideoResult[];
   error?: string;
 }
 
@@ -61,7 +74,7 @@ export interface CanvasTextNode extends CanvasNodeBase {
   error?: string;
 }
 
-export type CanvasNode = CanvasImageNode | CanvasGenerationNode | CanvasRuleNode | CanvasTextNode;
+export type CanvasNode = CanvasImageNode | CanvasGenerationNode | CanvasVideoNode | CanvasRuleNode | CanvasTextNode;
 
 export interface CanvasProject {
   id: string;

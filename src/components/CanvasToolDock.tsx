@@ -3,6 +3,7 @@ import {
   FlowArrow,
   ImageSquare,
   MagicWand,
+  FilmStrip,
   Play,
   SlidersHorizontal,
   TextT,
@@ -12,6 +13,7 @@ interface CanvasToolDockProps {
   canRun: boolean;
   onImport: () => void;
   onAddGeneration: () => void;
+  onAddVideo: () => void;
   onAddRules: () => void;
   onAddText: () => void;
   onRun: () => void;
@@ -23,6 +25,7 @@ export function CanvasToolDock({
   canRun,
   onImport,
   onAddGeneration,
+  onAddVideo,
   onAddRules,
   onAddText,
   onRun,
@@ -33,6 +36,7 @@ export function CanvasToolDock({
     <nav className="canvas-tool-dock" aria-label="画布节点工具">
       <ToolButton label="图片" icon={ImageSquare} onClick={onImport} />
       <ToolButton label="生图节点" icon={MagicWand} onClick={onAddGeneration} />
+      <ToolButton label="视频节点" icon={FilmStrip} onClick={onAddVideo} />
       <ToolButton label="规则节点" icon={SlidersHorizontal} onClick={onAddRules} />
       <ToolButton label="文字 LLM" icon={TextT} onClick={onAddText} />
       <ToolButton label="工作流" icon={FlowArrow} onClick={onWorkflow} />

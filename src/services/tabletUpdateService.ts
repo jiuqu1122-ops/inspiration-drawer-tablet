@@ -20,6 +20,12 @@ export interface TabletUpdateInstallResult {
   permissionRequired: boolean;
 }
 
+export interface TabletUpdatePrepareResult {
+  version: string;
+  cached: boolean;
+  size: number;
+}
+
 export interface TabletUpdateProgress {
   stage: "downloading" | "verified";
   version: string;
@@ -29,12 +35,17 @@ export interface TabletUpdateProgress {
 }
 
 export async function getTabletVersion(): Promise<string> {
-  return isTauri() ? getVersion() : "0.1.7";
+  return isTauri() ? getVersion() : "0.1.15";
 }
 
 export async function checkTabletUpdate(): Promise<TabletUpdateInfo> {
   assertTauriRuntime();
   return invoke<TabletUpdateInfo>("check_tablet_update");
+}
+
+export async function prepareTabletUpdate(): Promise<TabletUpdatePrepareResult> {
+  assertTauriRuntime();
+  return invoke<TabletUpdatePrepareResult>("prepare_tablet_update");
 }
 
 export async function installTabletUpdate(version: string): Promise<TabletUpdateInstallResult> {

@@ -1,5 +1,6 @@
 import {
   Check,
+  ChatCircleDots,
   DownloadSimple,
   Folders,
   ImageSquare,
@@ -14,7 +15,7 @@ import { useState } from "react";
 import type { CanvasAssetView } from "../features/canvas/CanvasStage";
 import type { CanvasProject } from "../../shared";
 
-export type ResourceSection = "projects" | "materials" | "tools";
+export type ResourceSection = "projects" | "materials" | "tools" | "chat";
 
 interface ResourceRailProps {
   active: ResourceSection;
@@ -32,6 +33,7 @@ interface ResourceRailProps {
   onChange: (section: ResourceSection) => void;
   onOpenChange: (open: boolean) => void;
   onImport: () => void;
+  onChatOpen: () => void;
 }
 
 const sections: Array<{
@@ -60,6 +62,7 @@ export function ResourceRail({
   onChange,
   onOpenChange,
   onImport,
+  onChatOpen,
 }: ResourceRailProps) {
   const [editingProjectId, setEditingProjectId] = useState<string>();
   const [projectNameDraft, setProjectNameDraft] = useState("");
@@ -67,6 +70,12 @@ export function ResourceRail({
   const generatedAssets = assets.filter((entry) => entry.asset.source === "generated");
 
   const selectSection = (section: ResourceSection) => {
+    if (section === "chat") {
+      onChange(section);
+      onOpenChange(false);
+      onChatOpen();
+      return;
+    }
     if (isOpen && active === section) {
       onOpenChange(false);
       return;
@@ -90,6 +99,15 @@ export function ResourceRail({
             <span>{label}</span>
           </button>
         ))}
+        <button
+          className={active === "chat" ? "resource-nav-item is-active" : "resource-nav-item"}
+          type="button"
+          aria-pressed={active === "chat"}
+          onClick={() => selectSection("chat")}
+        >
+          <ChatCircleDots weight="fill" />
+          <span>Chat</span>
+        </button>
       </nav>
 
       <section className="resource-drawer" aria-hidden={!isOpen}>
