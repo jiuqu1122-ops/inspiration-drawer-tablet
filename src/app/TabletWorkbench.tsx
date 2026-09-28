@@ -110,7 +110,7 @@ export function TabletWorkbench() {
   const [defaultImageModel, setDefaultImageModel] = useState<string>(MANAGED_IMAGE_MODEL.model);
   const [videoModelOptions, setVideoModelOptions] = useState<CanvasVideoModelOption[]>([]);
   const [defaultVideoModel, setDefaultVideoModel] = useState<string>(MANAGED_VIDEO_MODEL.model);
-  const [appVersion, setAppVersion] = useState("0.1.16");
+  const [appVersion, setAppVersion] = useState("0.1.17");
   const [availableUpdate, setAvailableUpdate] = useState<TabletUpdateInfo>();
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);

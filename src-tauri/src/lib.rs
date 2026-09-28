@@ -3,10 +3,11 @@ use reqwest::{header::CONTENT_TYPE, Client, Method, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
     fs,
     path::PathBuf,
     sync::{Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::Manager;
 use tokio::time::sleep;
@@ -90,6 +91,212 @@ struct ServerImageReference {
     name: String,
     mime_type: String,
     data_uri: String,
+}
+
+struct PreparedReferenceImage {
+    filename: String,
+    mime_type: &'static str,
+    bytes: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReferenceUploadTicket {
+    object_key: String,
+    upload_url: String,
+    method: String,
+    headers: HashMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloudRoute {
+    Proxy,
+    Direct,
+}
+
+impl CloudRoute {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Proxy => "proxy",
+            Self::Direct => "direct",
+        }
+    }
+}
+
+struct CloudTransport {
+    primary: Client,
+    primary_route: CloudRoute,
+    direct_fallback: Option<Client>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloudTransportErrorCategory {
+    Timeout,
+    Tls,
+    ConnectionReset,
+    ProxyConnect,
+    Dns,
+    Connect,
+    Request,
+    ResponseBody,
+    Network,
+    Initialization,
+}
+
+impl CloudTransportErrorCategory {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Tls => "tls",
+            Self::ConnectionReset => "connection_reset",
+            Self::ProxyConnect => "proxy_connect",
+            Self::Dns => "dns",
+            Self::Connect => "connect",
+            Self::Request => "request",
+            Self::ResponseBody => "response_body",
+            Self::Network => "network",
+            Self::Initialization => "initialization",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Timeout => "请求超时",
+            Self::Tls => "TLS 连接失败",
+            Self::ConnectionReset => "连接被重置",
+            Self::ProxyConnect => "代理连接失败",
+            Self::Dns => "DNS 解析失败",
+            Self::Connect => "无法建立连接",
+            Self::Request => "请求构造失败",
+            Self::ResponseBody => "响应传输失败",
+            Self::Network => "网络错误",
+            Self::Initialization => "网络连接初始化失败",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CloudTransportFailure {
+    category: CloudTransportErrorCategory,
+    fallback_attempted: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReferenceUploadOperation {
+    PrepareReference,
+    UploadTicket,
+    SignedPut,
+}
+
+impl ReferenceUploadOperation {
+    fn code(self) -> &'static str {
+        match self {
+            Self::PrepareReference => "prepare_reference",
+            Self::UploadTicket => "upload_ticket",
+            Self::SignedPut => "signed_put",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::PrepareReference => "准备参考图失败",
+            Self::UploadTicket => "获取上传凭证失败",
+            Self::SignedPut => "上传图片文件失败",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReferenceUploadFailureReason {
+    Transport(CloudTransportFailure),
+    HttpStatus(u16),
+    InvalidResponse,
+    InvalidTicket,
+    UnsupportedImage,
+    InvalidImageData,
+    ImageTooLarge,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReferenceUploadFailure {
+    reference_index: usize,
+    operation: ReferenceUploadOperation,
+    reason: ReferenceUploadFailureReason,
+}
+
+impl ReferenceUploadFailure {
+    fn new(
+        reference_index: usize,
+        operation: ReferenceUploadOperation,
+        reason: ReferenceUploadFailureReason,
+    ) -> Self {
+        Self {
+            reference_index,
+            operation,
+            reason,
+        }
+    }
+
+    fn transport(
+        reference_index: usize,
+        operation: ReferenceUploadOperation,
+        failure: CloudTransportFailure,
+    ) -> Self {
+        Self::new(
+            reference_index,
+            operation,
+            ReferenceUploadFailureReason::Transport(failure),
+        )
+    }
+
+    fn message(self) -> String {
+        let detail = match self.reason {
+            ReferenceUploadFailureReason::Transport(failure) => {
+                let mut detail = failure.category.label().to_string();
+                if failure.fallback_attempted {
+                    detail.push_str("（已尝试备用网络路径）");
+                }
+                detail
+            }
+            ReferenceUploadFailureReason::HttpStatus(status) => match self.operation {
+                ReferenceUploadOperation::SignedPut => {
+                    format!("对象存储返回 HTTP {status}")
+                }
+                _ => format!("服务器返回 HTTP {status}"),
+            },
+            ReferenceUploadFailureReason::InvalidResponse => "服务器响应无效".to_string(),
+            ReferenceUploadFailureReason::InvalidTicket => "上传凭证参数无效".to_string(),
+            ReferenceUploadFailureReason::UnsupportedImage => {
+                "仅支持 PNG、JPEG、WebP 或 GIF 图片".to_string()
+            }
+            ReferenceUploadFailureReason::InvalidImageData => "图片数据无法读取".to_string(),
+            ReferenceUploadFailureReason::ImageTooLarge => "图片超过 10 MB".to_string(),
+        };
+        format!("{}：{detail}", self.operation.title())
+    }
+}
+
+fn format_reference_upload_failures(failures: &[ReferenceUploadFailure]) -> String {
+    if failures.is_empty() {
+        return "参考图上传失败".to_string();
+    }
+    if failures.len() == 1 {
+        return failures[0].message();
+    }
+    let mut sorted = failures.to_vec();
+    sorted.sort_by_key(|failure| failure.reference_index);
+    let details = sorted
+        .into_iter()
+        .map(|failure| {
+            format!(
+                "- 1 张（参考图 {}）：{}",
+                failure.reference_index + 1,
+                failure.message()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{} 张参考图上传失败：\n{details}", failures.len())
 }
 
 #[derive(Deserialize, Serialize)]
@@ -406,26 +613,22 @@ async fn generate_server_images(
     input: GenerateServerImagesInput,
 ) -> Result<Vec<NativeGeneratedImage>, String> {
     validate_generation_input(&input)?;
-    let client = create_http_client()?;
-    let mut share_ids = Vec::new();
+    let transport = create_cloud_transport()?;
+    let client = &transport.primary;
     let mut input_images = Vec::new();
+    let mut upload_failures = Vec::new();
 
-    for reference in &input.references {
-        match upload_reference(&app, &client, reference).await {
-            Ok((share_id, url)) => {
-                share_ids.push(share_id);
-                input_images.push(url);
-            }
-            Err(error) => {
-                cleanup_reference_shares(&app, &client, &share_ids).await;
-                return Err(error);
-            }
+    for (index, reference) in input.references.iter().enumerate() {
+        match upload_reference(&app, &transport, index, reference).await {
+            Ok(object_key) => input_images.push(object_key),
+            Err(error) => upload_failures.push(error),
         }
     }
+    if !upload_failures.is_empty() {
+        return Err(format_reference_upload_failures(&upload_failures));
+    }
 
-    let generation = submit_image_generation(&app, &client, &input, input_images).await;
-    cleanup_reference_shares(&app, &client, &share_ids).await;
-    let payload = generation?;
+    let payload = submit_image_generation(&app, client, &input, input_images).await?;
     let sources = collect_image_sources(&payload);
     if sources.is_empty() {
         return Err("应用服务端没有返回图片数据".to_string());
@@ -443,20 +646,18 @@ async fn generate_server_videos(
     input: GenerateServerVideosInput,
 ) -> Result<Vec<NativeGeneratedVideo>, String> {
     validate_video_generation_input(&input)?;
-    let client = create_http_client()?;
-    let mut share_ids = Vec::new();
+    let transport = create_cloud_transport()?;
+    let client = &transport.primary;
     let mut input_images = Vec::new();
-    for reference in &input.references {
-        match upload_reference(&app, &client, reference).await {
-            Ok((share_id, url)) => {
-                share_ids.push(share_id);
-                input_images.push(url);
-            }
-            Err(error) => {
-                cleanup_reference_shares(&app, &client, &share_ids).await;
-                return Err(error);
-            }
+    let mut upload_failures = Vec::new();
+    for (index, reference) in input.references.iter().enumerate() {
+        match upload_reference(&app, &transport, index, reference).await {
+            Ok(object_key) => input_images.push(object_key),
+            Err(error) => upload_failures.push(error),
         }
+    }
+    if !upload_failures.is_empty() {
+        return Err(format_reference_upload_failures(&upload_failures));
     }
     let body = json!({
         "clientRequestId": input.request_id,
@@ -470,8 +671,7 @@ async fn generate_server_videos(
         "count": input.count,
     });
     let result =
-        authenticated_json_request(&app, &client, Method::POST, "v1/ai/videos", Some(body)).await;
-    cleanup_reference_shares(&app, &client, &share_ids).await;
+        authenticated_json_request(&app, client, Method::POST, "v1/ai/videos", Some(body)).await;
     let (status, payload) = result?;
     ensure_success(status, &payload, "瑙嗛鐢熸垚浠诲姟鍒涘缓澶辫触")?;
     let mut sources = collect_video_sources(&payload);
@@ -1035,47 +1235,187 @@ fn decode_html_entities(value: &str) -> String {
 
 async fn upload_reference(
     app: &tauri::AppHandle,
-    client: &Client,
+    transport: &CloudTransport,
+    reference_index: usize,
     reference: &ServerImageReference,
-) -> Result<(String, String), String> {
-    let mime = normalize_reference_mime(&reference.mime_type)?;
+) -> Result<String, ReferenceUploadFailure> {
+    let prepared = prepare_reference_image(reference_index, reference)?;
+    let upload_bytes = prepared.bytes.len();
+    let ticket_body = json!({
+        "filename": prepared.filename,
+        "mime": prepared.mime_type,
+        "sizeBytes": upload_bytes,
+    });
+    let access_token = ensure_access_token(app, &transport.primary, false)
+        .await
+        .map_err(|_| {
+            ReferenceUploadFailure::new(
+                reference_index,
+                ReferenceUploadOperation::UploadTicket,
+                ReferenceUploadFailureReason::Transport(CloudTransportFailure {
+                    category: CloudTransportErrorCategory::Initialization,
+                    fallback_attempted: false,
+                }),
+            )
+        })?;
+    let endpoint = server_endpoint("v1/ai/reference-images/upload-ticket").map_err(|_| {
+        ReferenceUploadFailure::new(
+            reference_index,
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::InvalidTicket,
+        )
+    })?;
+    let ticket_response = send_upload_request(
+        transport,
+        ReferenceUploadOperation::UploadTicket,
+        upload_bytes,
+        |client, _route| {
+            client
+                .post(endpoint.clone())
+                .bearer_auth(&access_token)
+                .header("x-client-version", APP_VERSION)
+                .header("x-wallet-protocol", "1")
+                .json(&ticket_body)
+        },
+    )
+    .await
+    .map_err(|failure| {
+        ReferenceUploadFailure::transport(
+            reference_index,
+            ReferenceUploadOperation::UploadTicket,
+            failure,
+        )
+    })?;
+    let ticket_status = ticket_response.status();
+    if !ticket_status.is_success() {
+        return Err(ReferenceUploadFailure::new(
+            reference_index,
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::HttpStatus(ticket_status.as_u16()),
+        ));
+    }
+    let ticket_bytes = ticket_response.bytes().await.map_err(|error| {
+        ReferenceUploadFailure::transport(
+            reference_index,
+            ReferenceUploadOperation::UploadTicket,
+            CloudTransportFailure {
+                category: cloud_transport_category(&error, transport.primary_route),
+                fallback_attempted: false,
+            },
+        )
+    })?;
+    let ticket = parse_reference_upload_ticket(&ticket_bytes).map_err(|reason| {
+        ReferenceUploadFailure::new(
+            reference_index,
+            ReferenceUploadOperation::UploadTicket,
+            reason,
+        )
+    })?;
+    let upload_url = Url::parse(ticket.upload_url.trim()).map_err(|_| {
+        ReferenceUploadFailure::new(
+            reference_index,
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::InvalidTicket,
+        )
+    })?;
+    if upload_url.scheme() != "https" {
+        return Err(ReferenceUploadFailure::new(
+            reference_index,
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::InvalidTicket,
+        ));
+    }
+
+    // The request builder and byte body are recreated for every route attempt.
+    // A consumed upload request is never cloned or reused during fallback.
+    let upload_response = send_upload_request(
+        transport,
+        ReferenceUploadOperation::SignedPut,
+        upload_bytes,
+        |client, _route| {
+            let mut request = client
+                .put(upload_url.clone())
+                .header(reqwest::header::CONTENT_LENGTH, upload_bytes)
+                .body(prepared.bytes.clone());
+            for (name, value) in &ticket.headers {
+                request = request.header(name.as_str(), value.as_str());
+            }
+            request
+        },
+    )
+    .await
+    .map_err(|failure| {
+        ReferenceUploadFailure::transport(
+            reference_index,
+            ReferenceUploadOperation::SignedPut,
+            failure,
+        )
+    })?;
+    let upload_status = upload_response.status();
+    if !upload_status.is_success() {
+        return Err(ReferenceUploadFailure::new(
+            reference_index,
+            ReferenceUploadOperation::SignedPut,
+            ReferenceUploadFailureReason::HttpStatus(upload_status.as_u16()),
+        ));
+    }
+    Ok(ticket.object_key)
+}
+
+fn prepare_reference_image(
+    reference_index: usize,
+    reference: &ServerImageReference,
+) -> Result<PreparedReferenceImage, ReferenceUploadFailure> {
+    let mime_type = normalize_reference_mime(&reference.mime_type).map_err(|_| {
+        ReferenceUploadFailure::new(
+            reference_index,
+            ReferenceUploadOperation::PrepareReference,
+            ReferenceUploadFailureReason::UnsupportedImage,
+        )
+    })?;
     let encoded = reference
         .data_uri
         .split_once(',')
         .map(|(_, value)| value.replace(char::is_whitespace, ""))
-        .ok_or_else(|| format!("参考素材格式无效：{}", reference.name))?;
-    let decoded = BASE64
-        .decode(&encoded)
-        .map_err(|_| format!("参考素材编码无效：{}", reference.name))?;
-    if decoded.is_empty() || decoded.len() > MAX_REFERENCE_BYTES {
-        return Err(format!("参考素材超过 10 MB：{}", reference.name));
+        .ok_or_else(|| {
+            ReferenceUploadFailure::new(
+                reference_index,
+                ReferenceUploadOperation::PrepareReference,
+                ReferenceUploadFailureReason::InvalidImageData,
+            )
+        })?;
+    let decoded = BASE64.decode(&encoded).map_err(|_| {
+        ReferenceUploadFailure::new(
+            reference_index,
+            ReferenceUploadOperation::PrepareReference,
+            ReferenceUploadFailureReason::InvalidImageData,
+        )
+    })?;
+    if decoded.is_empty() {
+        return Err(ReferenceUploadFailure::new(
+            reference_index,
+            ReferenceUploadOperation::PrepareReference,
+            ReferenceUploadFailureReason::InvalidImageData,
+        ));
     }
-    let body = json!({
-        "images": [{
-            "filename": safe_reference_filename(&reference.name, mime),
-            "mime": mime,
-            "data": encoded,
-        }]
-    });
-    let (status, payload) = authenticated_json_request(
-        app,
-        client,
-        Method::POST,
-        "v1/ai/reference-images",
-        Some(body),
-    )
-    .await?;
-    ensure_success(status, &payload, "参考素材上传失败")?;
-    let share_id = required_string(&payload, "/shareId", "服务端没有返回素材上传 ID")?;
-    let url = required_string(&payload, "/urls/0", "服务端没有返回参考素材地址")?;
-    Ok((share_id, url))
-}
-
-async fn cleanup_reference_shares(app: &tauri::AppHandle, client: &Client, share_ids: &[String]) {
-    for share_id in share_ids {
-        let path = format!("v1/ai/reference-images/{}", share_id);
-        let _ = authenticated_json_request(app, client, Method::DELETE, &path, None).await;
+    if decoded.len() > MAX_REFERENCE_BYTES {
+        return Err(ReferenceUploadFailure::new(
+            reference_index,
+            ReferenceUploadOperation::PrepareReference,
+            ReferenceUploadFailureReason::ImageTooLarge,
+        ));
     }
+    let extension = match mime_type {
+        "image/png" => "png",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        _ => "jpg",
+    };
+    Ok(PreparedReferenceImage {
+        filename: format!("reference-{}.{}", reference_index + 1, extension),
+        mime_type,
+        bytes: decoded,
+    })
 }
 
 async fn submit_image_generation(
@@ -1114,7 +1454,7 @@ async fn submit_image_generation(
         Ok((status, payload)) => Err(server_error_message(
             &payload,
             status.as_u16(),
-            "生图服务返回错误",
+            "提交生成任务失败",
         )),
         Err(original_error) => recover_image_generation(app, client, &input.request_id, 5)
             .await
@@ -1211,10 +1551,12 @@ async fn authenticated_json_request(
         if let Some(value) = body.clone() {
             request = request.json(&value);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| format!("连接 Inspiration Drawer 服务端失败：{error}"))?;
+        let response = request.send().await.map_err(|error| {
+            format!(
+                "连接 Inspiration Drawer 服务端失败：{}",
+                cloud_transport_category(&error, CloudRoute::Direct).label()
+            )
+        })?;
         let status = response.status();
         let payload = response_json(response).await?;
         if status != StatusCode::UNAUTHORIZED || attempt > 0 {
@@ -1386,10 +1728,12 @@ async fn public_json_request_with_client(
     if let Some(value) = body {
         request = request.json(&value);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("连接 Inspiration Drawer 服务端失败：{error}"))?;
+    let response = request.send().await.map_err(|error| {
+        format!(
+            "连接 Inspiration Drawer 服务端失败：{}",
+            cloud_transport_category(&error, CloudRoute::Direct).label()
+        )
+    })?;
     let status = response.status();
     let payload = response_json(response).await?;
     Ok((status, payload))
@@ -1397,10 +1741,12 @@ async fn public_json_request_with_client(
 
 async fn response_json(response: reqwest::Response) -> Result<Value, String> {
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| format!("读取服务端响应失败：{error}"))?;
+    let body = response.text().await.map_err(|error| {
+        format!(
+            "读取服务端响应失败：{}",
+            cloud_transport_category(&error, CloudRoute::Direct).label()
+        )
+    })?;
     if body.trim().is_empty() {
         return Ok(Value::Null);
     }
@@ -1408,13 +1754,200 @@ async fn response_json(response: reqwest::Response) -> Result<Value, String> {
         .map_err(|_| format!("服务端返回了无法识别的数据：HTTP {}", status.as_u16()))
 }
 
+fn is_valid_reference_upload_object_key(value: &str) -> bool {
+    value
+        .strip_prefix("reference-images/")
+        .is_some_and(|filename| {
+            !filename.is_empty()
+                && filename.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+                })
+        })
+}
+
+fn parse_reference_upload_ticket(
+    body: &[u8],
+) -> Result<ReferenceUploadTicket, ReferenceUploadFailureReason> {
+    let ticket: ReferenceUploadTicket =
+        serde_json::from_slice(body).map_err(|_| ReferenceUploadFailureReason::InvalidResponse)?;
+    if !ticket.method.eq_ignore_ascii_case("PUT")
+        || !is_valid_reference_upload_object_key(&ticket.object_key)
+    {
+        return Err(ReferenceUploadFailureReason::InvalidTicket);
+    }
+    Ok(ticket)
+}
+
+fn reqwest_error_detail(error: &reqwest::Error) -> String {
+    let mut detail = error.to_string().to_ascii_lowercase();
+    let mut source = std::error::Error::source(error);
+    while let Some(current) = source {
+        detail.push(' ');
+        detail.push_str(&current.to_string().to_ascii_lowercase());
+        source = current.source();
+    }
+    detail
+}
+
+fn cloud_transport_category(
+    error: &reqwest::Error,
+    route: CloudRoute,
+) -> CloudTransportErrorCategory {
+    let detail = reqwest_error_detail(error);
+    if error.is_timeout() {
+        CloudTransportErrorCategory::Timeout
+    } else if detail.contains("certificate")
+        || detail.contains("tls")
+        || detail.contains("handshake")
+    {
+        CloudTransportErrorCategory::Tls
+    } else if detail.contains("connection reset")
+        || detail.contains("connection was reset")
+        || detail.contains("forcibly closed")
+    {
+        CloudTransportErrorCategory::ConnectionReset
+    } else if error.is_connect() {
+        if route == CloudRoute::Proxy {
+            CloudTransportErrorCategory::ProxyConnect
+        } else if detail.contains("dns") || detail.contains("resolve") {
+            CloudTransportErrorCategory::Dns
+        } else {
+            CloudTransportErrorCategory::Connect
+        }
+    } else if error.is_request() {
+        CloudTransportErrorCategory::Request
+    } else if error.is_body() {
+        CloudTransportErrorCategory::ResponseBody
+    } else {
+        CloudTransportErrorCategory::Network
+    }
+}
+
+fn should_attempt_upload_fallback(
+    error: &reqwest::Error,
+    category: CloudTransportErrorCategory,
+) -> bool {
+    error.is_connect()
+        && matches!(
+            category,
+            CloudTransportErrorCategory::Tls
+                | CloudTransportErrorCategory::ConnectionReset
+                | CloudTransportErrorCategory::ProxyConnect
+                | CloudTransportErrorCategory::Dns
+                | CloudTransportErrorCategory::Connect
+        )
+}
+
+async fn send_upload_request<F>(
+    transport: &CloudTransport,
+    operation: ReferenceUploadOperation,
+    upload_bytes: usize,
+    build: F,
+) -> Result<reqwest::Response, CloudTransportFailure>
+where
+    F: Fn(&Client, CloudRoute) -> reqwest::RequestBuilder,
+{
+    let mut attempts = vec![(&transport.primary, transport.primary_route)];
+    if let Some(direct) = transport.direct_fallback.as_ref() {
+        attempts.push((direct, CloudRoute::Direct));
+    }
+
+    for (index, (client, route)) in attempts.iter().enumerate() {
+        let attempt_started_at = Instant::now();
+        match build(client, *route).send().await {
+            Ok(response) => {
+                eprintln!(
+                    "[mobile_cloud_upload] operation={} route={} connect_failure_category=none fallback_attempted={} upload_bytes={} elapsed_ms={} http_status={}",
+                    operation.code(),
+                    route.label(),
+                    index > 0,
+                    upload_bytes,
+                    attempt_started_at.elapsed().as_millis(),
+                    response.status().as_u16(),
+                );
+                return Ok(response);
+            }
+            Err(error) => {
+                let category = cloud_transport_category(&error, *route);
+                let fallback_available = index + 1 < attempts.len();
+                let fallback_attempted =
+                    fallback_available && should_attempt_upload_fallback(&error, category);
+                eprintln!(
+                    "[mobile_cloud_upload] operation={} route={} connect_failure_category={} fallback_attempted={} upload_bytes={} elapsed_ms={} http_status=none",
+                    operation.code(),
+                    route.label(),
+                    category.code(),
+                    fallback_attempted,
+                    upload_bytes,
+                    attempt_started_at.elapsed().as_millis(),
+                );
+                if fallback_attempted {
+                    continue;
+                }
+                return Err(CloudTransportFailure {
+                    category,
+                    fallback_attempted: index > 0,
+                });
+            }
+        }
+    }
+    Err(CloudTransportFailure {
+        category: CloudTransportErrorCategory::Network,
+        fallback_attempted: attempts.len() > 1,
+    })
+}
+
+fn environment_proxy_configured() -> bool {
+    [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ]
+    .iter()
+    .any(|name| {
+        std::env::var(name)
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
+fn create_cloud_transport() -> Result<CloudTransport, String> {
+    let proxy_configured = environment_proxy_configured();
+    let primary = create_http_client()?;
+    let direct_fallback = if proxy_configured {
+        Some(
+            Client::builder()
+                .connect_timeout(Duration::from_secs(12))
+                .timeout(Duration::from_secs(900))
+                .user_agent(format!("InspirationDrawerMobile/{APP_VERSION}"))
+                .no_proxy()
+                .build()
+                .map_err(|_| "无法创建直连备用网络客户端".to_string())?,
+        )
+    } else {
+        None
+    };
+    Ok(CloudTransport {
+        primary,
+        primary_route: if proxy_configured {
+            CloudRoute::Proxy
+        } else {
+            CloudRoute::Direct
+        },
+        direct_fallback,
+    })
+}
+
 fn create_http_client() -> Result<Client, String> {
     Client::builder()
-        .connect_timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(12))
         .timeout(Duration::from_secs(900))
         .user_agent(format!("InspirationDrawerMobile/{APP_VERSION}"))
         .build()
-        .map_err(|error| format!("无法创建网络客户端：{error}"))
+        .map_err(|_| "无法创建网络客户端".to_string())
 }
 
 fn server_base_url() -> Result<Url, String> {
@@ -1458,13 +1991,25 @@ fn ensure_success(status: StatusCode, payload: &Value, fallback: &str) -> Result
 }
 
 fn server_error_message(payload: &Value, status: u16, fallback: &str) -> String {
-    let message = payload
+    let reported = payload
         .pointer("/error/message")
         .and_then(Value::as_str)
         .or_else(|| payload.get("message").and_then(Value::as_str))
-        .or_else(|| payload.get("error").and_then(Value::as_str))
+        .or_else(|| payload.get("error").and_then(Value::as_str));
+    let message = reported
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .filter(|message| !message.eq_ignore_ascii_case("An unexpected error occurred"))
+        .filter(|message| {
+            let lower = message.to_ascii_lowercase();
+            !lower.contains("http://")
+                && !lower.contains("https://")
+                && !lower.contains("authorization")
+                && !lower.contains("token")
+                && !lower.contains("signature")
+        })
         .unwrap_or(fallback);
-    format!("{message}：HTTP {status}")
+    format!("{message}：服务器返回 HTTP {status}")
 }
 
 fn required_string(payload: &Value, path: &str, message: &str) -> Result<String, String> {
@@ -1750,27 +2295,6 @@ fn normalize_reference_mime(input: &str) -> Result<&'static str, String> {
     }
 }
 
-fn safe_reference_filename(name: &str, mime: &str) -> String {
-    let stem: String = name
-        .chars()
-        .filter(|character| character.is_alphanumeric() || matches!(character, '-' | '_' | '.'))
-        .take(180)
-        .collect();
-    if !stem.is_empty() && stem.contains('.') {
-        return stem;
-    }
-    let extension = match mime {
-        "image/png" => "png",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        _ => "jpg",
-    };
-    format!(
-        "{}.{extension}",
-        if stem.is_empty() { "reference" } else { &stem }
-    )
-}
-
 fn collect_image_sources(payload: &Value) -> Vec<String> {
     let mut sources = Vec::new();
     for path in [
@@ -1986,6 +2510,73 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc, Arc,
+        },
+        thread,
+    };
+
+    fn spawn_http_server(status: u16, response_delay: Duration) -> (Url, mpsc::Receiver<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        let address = listener.local_addr().expect("mock server address");
+        let (body_sender, body_receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept mock request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let mut expected_length = None;
+            loop {
+                let read = stream.read(&mut buffer).expect("read mock request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if expected_length.is_none() {
+                    if let Some(header_end) =
+                        request.windows(4).position(|part| part == b"\r\n\r\n")
+                    {
+                        let headers = String::from_utf8_lossy(&request[..header_end]);
+                        let content_length = headers
+                            .lines()
+                            .find_map(|line| {
+                                line.split_once(':').and_then(|(name, value)| {
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                            })
+                            .unwrap_or(0);
+                        expected_length = Some((header_end + 4, content_length));
+                    }
+                }
+                if let Some((body_start, content_length)) = expected_length {
+                    if request.len() >= body_start + content_length {
+                        let _ = body_sender
+                            .send(request[body_start..body_start + content_length].to_vec());
+                        break;
+                    }
+                }
+            }
+            thread::sleep(response_delay);
+            let reason = if status == 200 { "OK" } else { "Error" };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        (
+            Url::parse(&format!("http://{address}/upload")).expect("mock URL"),
+            body_receiver,
+        )
+    }
 
     #[test]
     fn defaults_to_the_existing_unmind_server() {
@@ -2002,6 +2593,261 @@ mod tests {
     #[test]
     fn accepts_android_emulator_development_host() {
         assert!(normalize_server_base_url("http://10.0.2.2:8787").is_ok());
+    }
+
+    #[test]
+    fn parses_reference_upload_ticket_object_key() {
+        let ticket = parse_reference_upload_ticket(
+            br#"{
+                "objectKey":"reference-images/12d2e7bb-6e3f-4ba0-bdb0-b82023a67e23.png",
+                "uploadUrl":"https://storage.example.test/upload?signature=secret",
+                "method":"PUT",
+                "headers":{"Content-Type":"image/png"}
+            }"#,
+        )
+        .expect("valid upload ticket");
+        assert_eq!(
+            ticket.object_key,
+            "reference-images/12d2e7bb-6e3f-4ba0-bdb0-b82023a67e23.png"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_reference_upload_object_key() {
+        let result = parse_reference_upload_ticket(
+            br#"{
+                "objectKey":"reference-images/../secret.png",
+                "uploadUrl":"https://storage.example.test/upload",
+                "method":"PUT",
+                "headers":{}
+            }"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn upload_ticket_tls_and_http_errors_keep_the_stage() {
+        let tls = ReferenceUploadFailure::transport(
+            0,
+            ReferenceUploadOperation::UploadTicket,
+            CloudTransportFailure {
+                category: CloudTransportErrorCategory::Tls,
+                fallback_attempted: false,
+            },
+        );
+        assert_eq!(tls.message(), "获取上传凭证失败：TLS 连接失败");
+
+        let unauthorized = ReferenceUploadFailure::new(
+            0,
+            ReferenceUploadOperation::UploadTicket,
+            ReferenceUploadFailureReason::HttpStatus(401),
+        );
+        assert_eq!(
+            unauthorized.message(),
+            "获取上传凭证失败：服务器返回 HTTP 401"
+        );
+    }
+
+    #[test]
+    fn signed_put_errors_name_the_object_storage_stage() {
+        let reset = ReferenceUploadFailure::transport(
+            0,
+            ReferenceUploadOperation::SignedPut,
+            CloudTransportFailure {
+                category: CloudTransportErrorCategory::ConnectionReset,
+                fallback_attempted: true,
+            },
+        );
+        assert_eq!(
+            reset.message(),
+            "上传图片文件失败：连接被重置（已尝试备用网络路径）"
+        );
+        for status in [403, 413] {
+            let failure = ReferenceUploadFailure::new(
+                0,
+                ReferenceUploadOperation::SignedPut,
+                ReferenceUploadFailureReason::HttpStatus(status),
+            );
+            assert_eq!(
+                failure.message(),
+                format!("上传图片文件失败：对象存储返回 HTTP {status}")
+            );
+        }
+    }
+
+    #[test]
+    fn multiple_reference_failures_are_counted_without_sensitive_details() {
+        let failures = vec![
+            ReferenceUploadFailure::new(
+                0,
+                ReferenceUploadOperation::UploadTicket,
+                ReferenceUploadFailureReason::HttpStatus(401),
+            ),
+            ReferenceUploadFailure::transport(
+                1,
+                ReferenceUploadOperation::SignedPut,
+                CloudTransportFailure {
+                    category: CloudTransportErrorCategory::Timeout,
+                    fallback_attempted: false,
+                },
+            ),
+        ];
+        let message = format_reference_upload_failures(&failures);
+        assert!(message.starts_with("2 张参考图上传失败："));
+        assert!(message.contains("参考图 1"));
+        assert!(message.contains("获取上传凭证失败"));
+        assert!(message.contains("参考图 2"));
+        assert!(message.contains("上传图片文件失败"));
+        for secret in [
+            "secret-token",
+            "https://",
+            "signature=",
+            "Authorization",
+            "C:\\Users\\private",
+        ] {
+            assert!(!message.contains(secret));
+        }
+    }
+
+    #[test]
+    fn generic_backend_500_uses_the_operation_fallback() {
+        let payload = json!({
+            "error": "internal_server_error",
+            "message": "An unexpected error occurred"
+        });
+        assert_eq!(
+            server_error_message(&payload, 500, "提交生成任务失败"),
+            "提交生成任务失败：服务器返回 HTTP 500"
+        );
+    }
+
+    #[test]
+    fn upload_transport_falls_back_and_rebuilds_the_body() {
+        tauri::async_runtime::block_on(async {
+            let (endpoint, received_body) = spawn_http_server(200, Duration::ZERO);
+            let primary = Client::builder()
+                .connect_timeout(Duration::from_millis(300))
+                .timeout(Duration::from_secs(2))
+                .no_proxy()
+                .build()
+                .expect("primary client");
+            let direct = Client::builder()
+                .connect_timeout(Duration::from_millis(300))
+                .timeout(Duration::from_secs(2))
+                .no_proxy()
+                .build()
+                .expect("direct client");
+            let transport = CloudTransport {
+                primary,
+                primary_route: CloudRoute::Proxy,
+                direct_fallback: Some(direct),
+            };
+            let build_count = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&build_count);
+            let upload_body = b"rebuildable-image-bytes".to_vec();
+            let unavailable_endpoint =
+                Url::parse("http://mobile-upload-fallback-test.invalid/upload")
+                    .expect("unavailable URL");
+            let response = send_upload_request(
+                &transport,
+                ReferenceUploadOperation::SignedPut,
+                upload_body.len(),
+                |client, route| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let target = if route == CloudRoute::Proxy {
+                        unavailable_endpoint.clone()
+                    } else {
+                        endpoint.clone()
+                    };
+                    client.put(target).body(upload_body.clone())
+                },
+            )
+            .await
+            .expect("direct fallback succeeds");
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(build_count.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                received_body
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("uploaded body"),
+                b"rebuildable-image-bytes"
+            );
+        });
+    }
+
+    #[test]
+    fn upload_http_errors_do_not_send_a_second_post() {
+        for status in [400, 401, 413] {
+            tauri::async_runtime::block_on(async {
+                let (endpoint, received_body) = spawn_http_server(status, Duration::ZERO);
+                let primary = Client::builder()
+                    .timeout(Duration::from_secs(2))
+                    .no_proxy()
+                    .build()
+                    .expect("primary client");
+                let direct = primary.clone();
+                let transport = CloudTransport {
+                    primary,
+                    primary_route: CloudRoute::Direct,
+                    direct_fallback: Some(direct),
+                };
+                let build_count = Arc::new(AtomicUsize::new(0));
+                let counter = Arc::clone(&build_count);
+                let response = send_upload_request(
+                    &transport,
+                    ReferenceUploadOperation::UploadTicket,
+                    4,
+                    |client, _route| {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        client.post(endpoint.clone()).body("test")
+                    },
+                )
+                .await
+                .expect("HTTP response is returned without fallback");
+                assert_eq!(response.status().as_u16(), status);
+                assert_eq!(build_count.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    received_body
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("posted body"),
+                    b"test"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn upload_timeout_is_classified_without_fallback() {
+        tauri::async_runtime::block_on(async {
+            let (endpoint, received_body) = spawn_http_server(200, Duration::from_millis(300));
+            let primary = Client::builder()
+                .connect_timeout(Duration::from_millis(100))
+                .timeout(Duration::from_millis(100))
+                .no_proxy()
+                .build()
+                .expect("timeout client");
+            let transport = CloudTransport {
+                primary,
+                primary_route: CloudRoute::Direct,
+                direct_fallback: None,
+            };
+            let failure = send_upload_request(
+                &transport,
+                ReferenceUploadOperation::SignedPut,
+                4,
+                |client, _route| client.put(endpoint.clone()).body("test"),
+            )
+            .await
+            .expect_err("request should time out");
+            assert_eq!(failure.category, CloudTransportErrorCategory::Timeout);
+            assert!(!failure.fallback_attempted);
+            assert_eq!(
+                received_body
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("request body arrived"),
+                b"test"
+            );
+        });
     }
 
     #[test]
